@@ -94,28 +94,13 @@ const createEmptyBoard = (c, r) => Array(r).fill(null).map(() =>
 );
     
 export default function App() {
-    /**
- * Procedural AI Evaluator
- * Evaluates the board using a prioritized, backwards-chained goal matrix.
- */
-
-
-    const skipDialog = () => {
-        setShowDialog(false);
-        setDialogIndex(dialogs.length);
-    };
-
-    
-    // Add this near your other state variables
   const [savedCampaigns, setSavedCampaigns] = useState([]);
 
-  // Replace your existing default.json fetch useEffect with this:
   useEffect(() => {
     const stored = localStorage.getItem('t3_campaigns');
     if (stored) {
       setSavedCampaigns(JSON.parse(stored));
     } else {
-      // If empty, fetch default and save it as the base campaign
       fetch('./default.json')
         .then(res => res.json())
         .then(data => {
@@ -131,7 +116,7 @@ export default function App() {
     }
   }, []);
 
-    const handleCampaignUpload = (e) => {
+  const handleCampaignUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
@@ -207,6 +192,11 @@ export default function App() {
   const [showDialog, setShowDialog] = useState(false);
   const [dialogIndex, setDialogIndex] = useState(0);
 
+  const skipDialog = () => {
+      setShowDialog(false);
+      setDialogIndex(dialogs.length);
+  };
+
   // Editor State
   const [editorTab, setEditorTab] = useState('tools'); 
   const [editorTool, setEditorTool] = useState('empty');
@@ -217,10 +207,12 @@ export default function App() {
   const [renamingIndex, setRenamingIndex] = useState(-1);
   const [aiBehavior, setAiBehavior] = useState('standard');
   const [aiDiff, setAiDiff] = useState('hard');
+  
   const handleDragStart = (e, index) => {
     setDraggedIndex(index);
     e.dataTransfer.effectAllowed = 'move';
   };
+  
   useEffect(() => {
     const isBotActive = (appMode === 'solo' || (appMode === 'campaign' && currentGoal.type === 'standard'));
     
@@ -235,7 +227,7 @@ export default function App() {
         
         return () => clearTimeout(timer);
     }
-}, [currentPlayer, appMode, currentGoal, board, gameOver]);
+}, [currentPlayer, appMode, currentGoal, board, gameOver, aiDiff, aiBehavior]);
 
   const handleDragOver = (e) => {
     e.preventDefault();
@@ -273,7 +265,7 @@ export default function App() {
   const isDragging = useRef(false);
   const lastMouseDir = useRef('r'); // Tracks raw mouse movement direction
   const lastMouse = useRef({ x: 0, y: 0 });
-  const canvasRef = useRef(null); // Missing ref restored
+  const canvasRef = useRef(null);
 
   useEffect(() => {
     fetch('./default.json')
@@ -907,6 +899,7 @@ export default function App() {
     setRows(levelData.rows || levelData.gridSize || 9);
     setBoard(JSON.parse(JSON.stringify(levelData.board))); 
     setCurrentGoal(levelData.goal || { type: 'standard', target: 0 });
+    setAiBehavior(levelData.aiBehavior || 'standard');
     
     let d = levelData.dialogs || [];
     if (levelData.preLevelDialog && d.length === 0) {
@@ -945,6 +938,7 @@ export default function App() {
       } catch (err) { alert("Invalid JSON"); }
     };
     r.readAsText(file);
+    e.target.value = null;
   };
 
   // --- RENDERERS ---
@@ -987,6 +981,18 @@ export default function App() {
          <div className="bg-slate-900 border border-slate-800 p-8 rounded-2xl max-w-md w-full shadow-2xl flex flex-col gap-6">
             <h2 className="text-2xl font-black text-white">{appMode === 'local_setup' ? 'LOCAL MATCH CONFIG' : 'SOLO PUZZLE CONFIG'}</h2>
             
+            {appMode === 'solo_setup' && (
+              <div>
+                 <label className="text-xs text-slate-400 font-bold block mb-1">AI DIFFICULTY</label>
+                 <select value={aiDiff} onChange={(e) => setAiDiff(e.target.value)} className="w-full bg-slate-800 text-white p-2 rounded outline-none border border-slate-700">
+                     <option value="drunk">Drunk (100% Random)</option>
+                     <option value="easy">Easy (35% Random)</option>
+                     <option value="normal">Normal (15% Random)</option>
+                     <option value="hard">Hard (0% Random)</option>
+                 </select>
+              </div>
+            )}
+
             <div className="flex gap-4">
               <div className="flex-1">
                 <label className="text-xs text-slate-400 font-bold block mb-1">GRID WIDTH</label>
@@ -1005,14 +1011,15 @@ export default function App() {
 
             <div>
                <label className="w-full py-3 bg-slate-800 text-slate-300 rounded font-bold cursor-pointer text-center block hover:bg-slate-700 border border-slate-700">
-                  IMPORT LEVEL JSON
-                  <input type="file" accept=".json" className="hidden" onChange={(e) => handleLevelImport(e, (d) => {
+                 IMPORT LEVEL JSON
+                 <input type="file" accept=".json" className="hidden" onChange={(e) => handleLevelImport(e, (d) => {
                      setCols(d.cols || d.gridSize || 9);
                      setRows(d.rows || d.gridSize || 9);
                      setBoard(JSON.parse(JSON.stringify(d.board)));
                      setCurrentGoal(d.goal || { type: 'standard', target: 0 });
+                     setAiBehavior(d.aiBehavior || 'standard');
                      alert("Level Loaded!");
-                  })} />
+                 })} />
                </label>
             </div>
 
@@ -1363,13 +1370,6 @@ function evaluateGeometricExtension(board, x, y, player, opponent, cols, rows) {
     return score;
 }
 
-// WHITEBOARD: countPoints Logic
-// 1. Iterate through all board vectors (Horizontal, Vertical, Diagonal L/R).
-// 2. Traverse tiles to accumulate contiguous sequences of targetPlayer pieces or wildcards (zapspace).
-// 3. Break the sequence if blocked by a wall, void, dead piece, or opponent piece.
-// 4. Validate the sequence by checking if the distance between the first and last player piece is >= 3.
-// 5. Increment the simulated score for every valid sequence.
-
 function countPoints(boardState, targetPlayer, rows, cols) {
     let score = 0;
 
@@ -1445,15 +1445,6 @@ function countPoints(boardState, targetPlayer, rows, cols) {
     return score;
 }
 
-// WHITEBOARD: Bot Execution Hook
-// 1. Verify appMode is either 'solo' or 'campaign'.
-// 2. Verify currentGoal.type is 'standard'.
-// 3. Ensure it is the bot's turn ('O') and the board is not in a game over state.
-// 4. Trigger the procedural logic.
-
-
- 
-
   // --- MAIN GAME UI ---
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-cyan-500/30 flex flex-col h-screen overflow-hidden select-none">
@@ -1501,8 +1492,18 @@ function countPoints(boardState, targetPlayer, rows, cols) {
           <h2 className="text-4xl font-black text-white tracking-widest drop-shadow-[0_0_10px_rgba(255,255,255,0.8)]">
             SELECT CAMPAIGN
           </h2>
+
+          <div className="bg-slate-900 border border-slate-800 rounded p-4 w-96 max-w-full">
+             <label className="text-xs text-slate-400 font-bold block mb-2 tracking-widest uppercase">Global AI Difficulty</label>
+             <select value={aiDiff} onChange={(e) => setAiDiff(e.target.value)} className="w-full bg-slate-800 text-cyan-400 font-bold p-2 rounded outline-none border border-slate-700">
+                 <option value="drunk">Drunk (100% Random)</option>
+                 <option value="easy">Easy (35% Random)</option>
+                 <option value="normal">Normal (15% Random)</option>
+                 <option value="hard">Hard (0% Random)</option>
+             </select>
+          </div>
           
-          <div className="flex flex-col space-y-3 w-96 max-h-[50vh] overflow-y-auto pr-2 custom-scrollbar">
+          <div className="flex flex-col space-y-3 w-96 max-h-[40vh] overflow-y-auto pr-2 custom-scrollbar">
             {savedCampaigns.map((camp) => (
               <div key={camp.id} className="group relative flex w-full">
                 <button
@@ -1690,6 +1691,18 @@ function countPoints(boardState, targetPlayer, rows, cols) {
                      {currentGoal.type !== 'standard' && currentGoal.type !== 'fill_targets' && (
                         <input type="number" value={currentGoal.target} onChange={(e) => setCurrentGoal({...currentGoal, target: Number(e.target.value)})} className="w-full bg-slate-800 text-white p-1.5 text-xs rounded border border-slate-700 outline-none" placeholder="Target Value" />
                      )}
+
+                     {currentGoal.type === 'standard' && (
+                         <div className="mt-4 pt-3 border-t border-slate-800">
+                             <label className="text-[10px] text-indigo-400 font-bold uppercase mb-2 block">AI Behavior</label>
+                             <select value={aiBehavior} onChange={(e) => setAiBehavior(e.target.value)} className="w-full bg-slate-800 text-white text-xs p-1.5 rounded border border-indigo-900/50 outline-none">
+                                 <option value="standard">Standard (Dynamic)</option>
+                                 <option value="aggressive">Aggressive (Attack)</option>
+                                 <option value="defensive">Defensive (Stop Player)</option>
+                             </select>
+                             <p className="text-[9px] text-slate-500 mt-1 leading-tight">Controls the AI GOAP Engine evaluation priority for this level.</p>
+                         </div>
+                     )}
                   </div>
                 </div>
               )}
@@ -1716,14 +1729,14 @@ function countPoints(boardState, targetPlayer, rows, cols) {
               {editorTab === 'campaign' && (
                 <div className="flex flex-col gap-3 flex-1 h-full">
                   <div className="flex gap-2">
-                    <button onClick={() => setCampaign([...campaign, {name: `Level ${campaign.length + 1}`, cols, rows, board, dialogs, goal: currentGoal}])} className="flex-1 py-2 bg-indigo-500/20 text-indigo-300 rounded text-[10px] font-bold border border-indigo-500/50 hover:bg-indigo-500/40">
+                    <button onClick={() => setCampaign([...campaign, {name: `Level ${campaign.length + 1}`, cols, rows, board, dialogs, goal: currentGoal, aiBehavior}])} className="flex-1 py-2 bg-indigo-500/20 text-indigo-300 rounded text-[10px] font-bold border border-indigo-500/50 hover:bg-indigo-500/40">
                       + APPEND BOARD TO CAMPAIGN
                     </button>
                     <button 
                       onClick={() => {
                         if (selectedLevelIndex >= 0 && selectedLevelIndex < campaign.length) {
                           const newCampaign = [...campaign];
-                          newCampaign[selectedLevelIndex] = {name: campaign[selectedLevelIndex].name, cols, rows, board, dialogs, goal: currentGoal};
+                          newCampaign[selectedLevelIndex] = {name: campaign[selectedLevelIndex].name, cols, rows, board, dialogs, goal: currentGoal, aiBehavior};
                           setCampaign(newCampaign);
                         }
                       }} 
@@ -1803,7 +1816,7 @@ function countPoints(boardState, targetPlayer, rows, cols) {
 
                   <div className="flex flex-col gap-2 mt-auto">
                      <button onClick={() => downloadJSON(campaign, 'campaign.json')} disabled={!campaign.length} className="w-full py-1.5 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded text-[10px] font-bold disabled:opacity-50">EXPORT CAMPAIGN (.JSON)</button>
-                     <button onClick={() => downloadJSON({cols, rows, board, dialogs, goal: currentGoal}, 'level.json')} className="w-full py-1.5 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded text-[10px] font-bold">EXPORT LEVEL (.JSON)</button>
+                     <button onClick={() => downloadJSON({cols, rows, board, dialogs, goal: currentGoal, aiBehavior}, 'level.json')} className="w-full py-1.5 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded text-[10px] font-bold">EXPORT LEVEL (.JSON)</button>
                      
                      <label className="w-full py-1.5 bg-slate-800 text-slate-300 border border-slate-700 rounded text-[10px] font-bold cursor-pointer text-center block hover:bg-slate-700">
                         IMPORT LEVEL / CAMPAIGN
@@ -2052,6 +2065,3 @@ function countPoints(boardState, targetPlayer, rows, cols) {
     </div>
   );
 }
-
-
-
