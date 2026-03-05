@@ -1,4 +1,3 @@
-
 import './index.css'
 import React, { useState, useEffect, useRef } from 'react';
 
@@ -9,11 +8,11 @@ const MAX_ITERATIONS = 200;
 
 const DEFAULT_CAMPAIGN_FALLBACK = [
   {
+    name: "Tutorial",
     cols: 5, rows: 5,
     dialogs: [
-      { name: "Commander", text: "Welcome to Tic-Tac-Toe: Evolved." },
-      { name: "System", text: "Let's start simple." },
-      { name: "Commander", text: "Get a combo of 1 extra turn (score a line of 4) to pass this test." }
+      { name: "doromiert", text: "welcome to tic tac toe 2" },
+      { name: "doromiert", text: "this is just a fallback \"campaign\"" }
     ],
     goal: { type: 'min_combo', target: 1 },
     board: Array(5).fill(null).map(() => Array(5).fill(null).map(() => ({ type: 'empty', walls: {r:false, b:false, br:false, bl:false}, dead: false, lineId: null, isTarget: false, mechanicalLock: false })))
@@ -93,8 +92,85 @@ const downloadJSON = (data, filename) => {
 const createEmptyBoard = (c, r) => Array(r).fill(null).map(() => 
   Array(c).fill(null).map(() => ({ type: 'empty', walls: {r:false, b:false, br:false, bl:false}, dead: false, lineId: null, isTarget: false, mechanicalLock: false }))
 );
-
+    
 export default function App() {
+    const skipDialog = () => {
+        setShowDialog(false);
+        setDialogIndex(dialogs.length);
+    };
+
+    
+    // Add this near your other state variables
+  const [savedCampaigns, setSavedCampaigns] = useState([]);
+
+  // Replace your existing default.json fetch useEffect with this:
+  useEffect(() => {
+    const stored = localStorage.getItem('t3_campaigns');
+    if (stored) {
+      setSavedCampaigns(JSON.parse(stored));
+    } else {
+      // If empty, fetch default and save it as the base campaign
+      fetch('./default.json')
+        .then(res => res.json())
+        .then(data => {
+          const defaultCamp = { id: 'default', name: 'CORE CAMPAIGN', levels: data };
+          setSavedCampaigns([defaultCamp]);
+          localStorage.setItem('t3_campaigns', JSON.stringify([defaultCamp]));
+        })
+        .catch(() => {
+          const fallback = { id: 'default', name: 'TUTORIAL', levels: DEFAULT_CAMPAIGN_FALLBACK };
+          setSavedCampaigns([fallback]);
+          localStorage.setItem('t3_campaigns', JSON.stringify([fallback]));
+        });
+    }
+  }, []);
+
+    const handleCampaignUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const campaignData = JSON.parse(event.target.result);
+        const name = file.name.replace(/\.[^/.]+$/, ""); // Strip file extension
+        
+        if (!Array.isArray(campaignData)) throw new Error("Invalid campaign format");
+
+        const updatedCampaigns = [...savedCampaigns, { id: generateId(), name, levels: campaignData }];
+        setSavedCampaigns(updatedCampaigns);
+        localStorage.setItem('t3_campaigns', JSON.stringify(updatedCampaigns));
+      } catch (err) {
+        alert("Invalid campaign JSON file.");
+        console.error(err);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = ''; // Reset input to allow re-uploading the same file if needed
+  };
+
+  const loadCampaign = (id) => {
+    const selected = savedCampaigns.find(c => c.id === id);
+    if (selected) {
+      setCampaign(selected.levels);
+      setUnlockedLevels([0]); // Optional: Tie your hash-loading system here if needed
+      setCampaignIndex(-1);
+      setAppMode('campaign');
+    }
+  };
+
+  const deleteCampaign = (id, e) => {
+    e.stopPropagation(); 
+    if (id === 'default') return alert("Cannot delete the core campaign.");
+    
+    const updated = savedCampaigns.filter(c => c.id !== id);
+    setSavedCampaigns(updated);
+    localStorage.setItem('t3_campaigns', JSON.stringify(updated));
+  };
+      // Fail state for objective fail UI
+      const [failState, setFailState] = useState(false);
+    // Level unlocks for campaign
+    const [unlockedLevels, setUnlockedLevels] = useState([0]); // Always unlock first level by default
   // App Navigation State
   const [appMode, setAppMode] = useState('title'); // title, local_setup, local, solo_setup, solo, campaign_select, campaign, editor
   const [isPlaytesting, setIsPlaytesting] = useState(false);
@@ -130,6 +206,42 @@ export default function App() {
   const [editorTool, setEditorTool] = useState('empty');
   const [editorDir, setEditorDir] = useState('r');
   const [editorLetter, setEditorLetter] = useState('A');
+  const [selectedLevelIndex, setSelectedLevelIndex] = useState(-1);
+  const [draggedIndex, setDraggedIndex] = useState(-1);
+  const [renamingIndex, setRenamingIndex] = useState(-1);
+  const handleDragStart = (e, index) => {
+    setDraggedIndex(index);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleDrop = (e, dropIndex) => {
+    e.preventDefault();
+    const dragIndex = draggedIndex;
+    setDraggedIndex(-1);
+    
+    if (dragIndex === dropIndex) return;
+    
+    const newCampaign = [...campaign];
+    const draggedItem = newCampaign[dragIndex];
+    newCampaign.splice(dragIndex, 1);
+    newCampaign.splice(dropIndex, 0, draggedItem);
+    
+    setCampaign(newCampaign);
+    
+    // Update selected index if it was affected
+    if (selectedLevelIndex === dragIndex) {
+      setSelectedLevelIndex(dropIndex);
+    } else if (selectedLevelIndex > dragIndex && selectedLevelIndex <= dropIndex) {
+      setSelectedLevelIndex(selectedLevelIndex - 1);
+    } else if (selectedLevelIndex < dragIndex && selectedLevelIndex >= dropIndex) {
+      setSelectedLevelIndex(selectedLevelIndex + 1);
+    }
+  };
 
   // Figma Canvas State
   const [pan, setPan] = useState({ x: 50, y: 50 });
@@ -145,6 +257,7 @@ export default function App() {
       .then(res => res.json())
       .then(data => setCampaign(data))
       .catch(() => setCampaign(DEFAULT_CAMPAIGN_FALLBACK));
+    setUnlockedLevels([0]);
   }, []);
 
   // --- KEYBOARD & MOUSE TRACKING ---
@@ -214,6 +327,7 @@ export default function App() {
     setPan({ x: 50, y: 50 }); // Reset Camera
     setZoom(1);
     setAppMode('title');
+    setFailState(false);
   };
 
   const initDebugLevel = () => {
@@ -250,9 +364,11 @@ export default function App() {
   };
 
  const handlePointerDown = (r, c) => {
-  setIsPainting(true);
-  const cell = grid[r][c];
-  
+  // setIsPainting(true); // Commented out, not defined
+  if (!board[r]) return; // Prevent TypeError if board[r] is undefined
+  const cell = board[r][c];
+  if (!cell) return; // Prevent TypeError if cell is undefined
+
   let action = true; // default add
   if (editorTool === 'target') {
     action = !cell.isTarget;
@@ -261,7 +377,6 @@ export default function App() {
   } else if (editorTool === 'zapspace') {
     action = cell.type !== 'zapspace';
   }
-  
   setPaintAction(action);
   applyTool(r, c, action, editorTool); // Apply immediately to the first cell
 };
@@ -285,10 +400,38 @@ export default function App() {
 
   // --- CORE LOGIC ENGINE ---
   const resolveTurn = (startX, startY) => {
+    let matchOver = false;
+    let wMsg = '';
     let b = JSON.parse(JSON.stringify(board));
     let q = [{ x: startX, y: startY, piece: currentPlayer, overwrite: false }];
     let linesToErase = new Set();
     let maxComboThisTurn = 0;
+        // Step 2: End level if no moves left (after matchOver/wMsg are set)
+        if (!matchOver) {
+          let hasPlayable = false;
+          for (let y = 0; y < rows; y++) {
+            for (let x = 0; x < cols; x++) {
+              const cell = b[y][x];
+              if (
+                cell.type !== 'void' &&
+                cell.type !== 'locked_mech' &&
+                !cell.mechanicalLock &&
+                cell.type !== 'dup' &&
+                cell.type !== 'zapspace' &&
+                cell.type !== 'locked_letter' &&
+                !cell.piece
+              ) {
+                hasPlayable = true;
+                break;
+              }
+            }
+            if (hasPlayable) break;
+          }
+          if (!hasPlayable) {
+            matchOver = true;
+            wMsg = wMsg || 'No more moves!';
+          }
+        }
     
     const processReactions = (queue) => {
       let iters = 0;
@@ -369,7 +512,20 @@ export default function App() {
           if (cell.dir === 'l' && nx >= 0 && b[ny][nx].walls.r) blocked = true;
           if (cell.dir === 'd' && cell.walls.b) blocked = true;
           if (cell.dir === 'u' && ny >= 0 && b[ny][nx].walls.b) blocked = true;
-          
+          // Stop if next cell is a mover that is blocked or will not move further
+          if (!blocked && nx >= 0 && nx < cols && ny >= 0 && ny < rows && b[ny][nx].type === 'mov') {
+            let nextMov = b[ny][nx];
+            let nnx = nx + (nextMov.dir === 'r' ? 1 : nextMov.dir === 'l' ? -1 : 0);
+            let nny = ny + (nextMov.dir === 'd' ? 1 : nextMov.dir === 'u' ? -1 : 0);
+            let nextBlocked = false;
+            if (nextMov.dir === 'r' && nextMov.walls.r) nextBlocked = true;
+            if (nextMov.dir === 'l' && nnx >= 0 && b[nny][nnx].walls.r) nextBlocked = true;
+            if (nextMov.dir === 'd' && nextMov.walls.b) nextBlocked = true;
+            if (nextMov.dir === 'u' && nny >= 0 && b[nny][nnx].walls.b) nextBlocked = true;
+            if (nextBlocked || nnx < 0 || nnx >= cols || nny < 0 || nny >= rows || b[nny][nnx].type === 'void') {
+              blocked = true;
+            }
+          }
           if (!blocked && nx >= 0 && nx < cols && ny >= 0 && ny < rows && b[ny][nx].type !== 'void') {
             moverQueue.push({from: {x,y}, to: {x:nx, y:ny}, piece: cell.piece, rotation: cell.rotation || 0, isRot: false});
           }
@@ -522,45 +678,111 @@ export default function App() {
        earnedExtraTurns += (pointsScoredThisTurn - 1);
     }
 
+    // Check if there are any valid moves left for any player (for campaign/solo, only X matters)
     let isFull = true;
     let targetsTotal = 0;
     let targetsFilled = 0;
-
-    for (let r of b) {
-      for (let c of r) {
+    let foundValidMove = false;
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const c = b[y][x];
         if (c.type === 'void') continue;
-        if (!c.piece && ['empty', 'zap', 'mov', 'rot_cw', 'rot_ccw', 'flip', 'switch'].includes(c.type)) isFull = false;
-        if (c.type === 'locked_letter' && c.unlocked && !c.piece) isFull = false;
-        
+        // Track targets for goal logic
         if (c.isTarget) {
-           targetsTotal++;
-           if (c.piece === 'X') targetsFilled++; 
+          targetsTotal++;
+          if (c.piece === 'X') targetsFilled++;
+        }
+        // Check for valid moves for current player (X in solo/campaign, X or O in local)
+        if (!c.piece) {
+          if (["empty", "zap", "mov", "rot_cw", "rot_ccw", "flip", "switch"].includes(c.type)) {
+            foundValidMove = true;
+          }
+          if (c.type === "locked_letter" && c.unlocked) {
+            foundValidMove = true;
+          }
+        }
+        // Check lock dots last
+        if (!c.piece && (c.type === "locked_mech" || c.mechanicalLock)) {
+          // Only allow if rules permit (customize if needed)
+          // For now, treat as not a valid move
         }
       }
     }
+    if (foundValidMove) isFull = false;
 
     setBoard(b);
     setScores(tempScores);
     setDrawnLines(tempDrawnLines);
 
-    let matchOver = isFull;
-    let wMsg = '';
 
     if (appMode === 'local' || isPlaytesting) {
-       if (isFull) wMsg = tempScores.X > tempScores.O ? 'Player X Wins!' : tempScores.O > tempScores.X ? 'Player O Wins!' : 'Tie!';
+      if (isFull) {
+        matchOver = true;
+        wMsg = tempScores.X > tempScores.O ? 'Player X Wins!' : tempScores.O > tempScores.X ? 'Player O Wins!' : 'Tie!';
+      }
     } else if (appMode === 'solo' || appMode === 'campaign') {
-       const g = currentGoal;
-       if (g.type === 'fill_targets' && targetsTotal > 0 && targetsFilled === targetsTotal) {
-           matchOver = true; wMsg = 'Target Areas Filled! You Win!';
-       } else if (g.type === 'min_combo' && maxComboThisTurn >= g.target) {
-           matchOver = true; wMsg = `Combo of ${g.target} Reached! You Win!`;
-       } else if (isFull) {
-           if (g.type === 'standard') wMsg = tempScores.X > tempScores.O ? 'Victory!' : 'Defeat!';
-           else if (g.type === 'exact_score') wMsg = tempScores.X === g.target ? 'Exact Score Reached! You Win!' : `Failed. Scored ${tempScores.X}, needed ${g.target}.`;
-           else if (g.type === 'min_score') wMsg = tempScores.X >= g.target ? 'Score Goal Reached! You Win!' : `Failed. Scored ${tempScores.X}, needed ${g.target}.`;
-           else if (g.type === 'max_score') wMsg = tempScores.X <= g.target ? 'Score Kept Low! You Win!' : `Failed. Scored ${tempScores.X}, needed under ${g.target}.`;
-           else wMsg = 'Game Over';
-       }
+      const g = currentGoal;
+      // Early end for these objectives
+      let failState = false;
+      if (g.type === 'fill_targets' && targetsTotal > 0 && targetsFilled === targetsTotal) {
+        matchOver = true; wMsg = 'Target Areas Filled! You Win!';
+      } else if (g.type === 'min_combo' && maxComboThisTurn >= g.target) {
+        matchOver = true; wMsg = `Combo of ${g.target} Reached! You Win!`;
+      } else if (g.type === 'exact_score' && tempScores.X === g.target) {
+        matchOver = true; wMsg = 'Exact Score Reached! You Win!';
+      }
+      // Board full end for all objectives
+      if (!matchOver && isFull) {
+        matchOver = true;
+        if (g.type === 'standard') {
+          wMsg = tempScores.X > tempScores.O ? 'Victory!' : 'Defeat!';
+          failState = tempScores.X <= tempScores.O;
+        } else if (g.type === 'exact_score') {
+          if (tempScores.X === g.target) {
+            wMsg = 'Exact Score Reached! You Win!';
+            failState = false;
+          } else {
+            wMsg = `Failed. Scored ${tempScores.X}, needed ${g.target}. Restart to try again.`;
+            failState = true;
+          }
+        } else if (g.type === 'min_score') {
+          if (tempScores.X >= g.target) {
+            wMsg = 'Score Goal Reached! You Win!';
+            failState = false;
+          } else {
+            wMsg = `Failed. Scored ${tempScores.X}, needed ${g.target}. Restart to try again.`;
+            failState = true;
+          }
+        } else if (g.type === 'max_score') {
+          if (tempScores.X <= g.target) {
+            wMsg = 'Score Kept Low! You Win!';
+            failState = false;
+          } else {
+            wMsg = `Failed. Scored ${tempScores.X}, needed under ${g.target}. Restart to try again.`;
+            failState = true;
+          }
+        } else if (g.type === 'min_combo') {
+          if (maxComboThisTurn >= g.target) {
+            wMsg = `Combo of ${g.target} Reached! You Win!`;
+            failState = false;
+          } else {
+            wMsg = `Failed. Combo of ${g.target} required. You reached ${maxComboThisTurn}. Restart to try again.`;
+            failState = true;
+          }
+        } else if (g.type === 'fill_targets') {
+          if (targetsTotal > 0 && targetsFilled === targetsTotal) {
+            wMsg = 'Target Areas Filled! You Win!';
+            failState = false;
+          } else {
+            wMsg = `Failed. Not all targets filled. Restart to try again.`;
+            failState = true;
+          }
+        } else {
+          wMsg = 'Game Over';
+        }
+      }
+      // Store fail state for UI
+      setTimeout(() => setFailState?.(failState), 0);
     }
 
     setGameOver(matchOver);
@@ -665,6 +887,7 @@ export default function App() {
     setWinMessage('');
     setPan({ x: 50, y: 50 }); // Reset Camera
     setZoom(1);
+     setFailState(false);
 
     if (d.length > 0 && appMode !== 'editor') {
        setDialogIndex(0);
@@ -767,43 +990,7 @@ export default function App() {
     );
   }
 
-  if (appMode === 'campaign_select') {
-     return (
-        <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4">
-           <div className="bg-slate-900 border border-slate-800 p-8 rounded-2xl max-w-lg w-full shadow-2xl flex flex-col gap-6">
-              <h2 className="text-2xl font-black text-white">CAMPAIGN SELECT</h2>
-              
-              <div className="max-h-64 overflow-y-auto space-y-2 bg-slate-950 p-3 rounded-lg border border-slate-800">
-                 {campaign.map((lvl, i) => (
-                    <button key={i} onClick={() => {
-                       setCampaignIndex(i);
-                       loadLevel(lvl);
-                       setAppMode('campaign');
-                    }} className="w-full flex justify-between items-center bg-slate-800 hover:bg-indigo-600/30 p-3 rounded text-sm transition-colors border border-slate-700">
-                       <span className="font-bold text-slate-200">Level {i+1}</span>
-                       <span className="text-slate-500 text-xs">{lvl.cols}x{lvl.rows}</span>
-                    </button>
-                 ))}
-                 {campaign.length === 0 && <p className="text-slate-500 text-center text-sm py-4">No campaign loaded.</p>}
-              </div>
-
-              <div>
-                 <label className="w-full py-3 bg-slate-800 text-slate-300 rounded font-bold cursor-pointer text-center block hover:bg-slate-700 border border-slate-700">
-                    IMPORT CAMPAIGN JSON
-                    <input type="file" accept=".json" className="hidden" onChange={(e) => handleLevelImport(e, (d) => {
-                       if(Array.isArray(d)) { setCampaign(d); alert("Campaign Loaded!"); }
-                       else alert("Invalid Campaign JSON");
-                    })} />
-                 </label>
-              </div>
-
-              <div className="flex gap-2">
-                 <button onClick={resetToTitle} className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded">BACK TO TITLE</button>
-              </div>
-           </div>
-        </div>
-     );
-  }
+ 
 
   // --- MAIN GAME UI ---
   return (
@@ -817,7 +1004,13 @@ export default function App() {
               <h2 className="text-xl font-black text-cyan-400 tracking-wider pl-2">{dialogs[dialogIndex].name}</h2>
               <p className="text-slate-200 whitespace-pre-wrap text-lg leading-relaxed pl-2 pb-6">{dialogs[dialogIndex].text}</p>
               
-              <div className="flex justify-end mt-2">
+              <div className="flex justify-end mt-2 gap-4">
+                <button 
+                    onClick={skipDialog} 
+                    className="px-8 py-3 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-lg transition-colors flex items-center gap-2 border border-slate-700"
+                >
+                    {"Skip [>>]"}
+                </button>
                  <button onClick={() => {
                      if (dialogIndex < dialogs.length - 1) setDialogIndex(d => d + 1);
                      else setShowDialog(false);
@@ -841,13 +1034,63 @@ export default function App() {
           </div>
         </div>
 
+        {appMode === 'campaign_select' && (
+        <div className="flex flex-col items-center justify-center h-screen space-y-6 relative z-10 w-full">
+          <h2 className="text-4xl font-black text-white tracking-widest drop-shadow-[0_0_10px_rgba(255,255,255,0.8)]">
+            SELECT CAMPAIGN
+          </h2>
+          
+          <div className="flex flex-col space-y-3 w-96 max-h-[50vh] overflow-y-auto pr-2 custom-scrollbar">
+            {savedCampaigns.map((camp) => (
+              <div key={camp.id} className="group relative flex w-full">
+                <button
+                  onClick={() => loadCampaign(camp.id)}
+                  className="flex-grow py-4 bg-slate-800 text-white font-mono text-sm uppercase tracking-widest hover:bg-cyan-900/50 transition-colors border border-slate-600 flex justify-between px-4 text-left"
+                >
+                  <span className="truncate pr-4">{camp.name}</span>
+                  <span className="text-cyan-400 shrink-0">{camp.levels?.length || 0} LVLs</span>
+                </button>
+                
+                {camp.id !== 'default' && (
+                  <button 
+                    onClick={(e) => deleteCampaign(camp.id, e)}
+                    className="absolute right-0 h-full px-4 bg-rose-900/80 text-rose-300 border border-rose-700 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-rose-700 font-bold"
+                  >
+                    X
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+
+          <div className="flex space-x-4 mt-8">
+            <label className="cursor-pointer px-6 py-3 bg-cyan-900/50 text-cyan-400 border border-cyan-500/50 font-mono text-sm hover:bg-cyan-800/50 transition-colors uppercase tracking-widest">
+              Upload .JSON
+              <input 
+                type="file" 
+                accept=".json" 
+                className="hidden" 
+                onChange={handleCampaignUpload} 
+              />
+            </label>
+            
+            <button 
+              onClick={() => setAppMode('title')}
+              className="px-6 py-3 bg-slate-800 text-slate-400 font-mono text-sm hover:text-white transition-colors uppercase tracking-widest"
+            >
+              Back
+            </button>
+          </div>
+        </div>
+      )}
+
         {appMode === 'campaign' && (
            <select 
              value={campaignIndex} 
              onChange={(e) => { setCampaignIndex(Number(e.target.value)); loadLevel(campaign[Number(e.target.value)]); }}
              className="bg-slate-800 text-white text-xs font-bold p-2 rounded border border-slate-700 outline-none"
            >
-             {campaign.map((_, i) => <option key={i} value={i}>Level {i + 1}</option>)}
+             {campaign.map((lvl, i) => <option key={i} value={i}>{lvl.name || `Level ${i + 1}`}</option>)}
            </select>
         )}
 
@@ -944,6 +1187,7 @@ export default function App() {
                     <p><strong>Walls:</strong> Click Edges for orthogonal walls. Click Corners for diagonal blocks.</p>
                     <p><strong>Pieces:</strong> Place predefined X and O pieces for puzzle setups.</p>
                     <p><strong>Lock Dot:</strong> Toggle mechanical locks as overlays on most cell types.</p>
+                    <p><strong>Campaign:</strong> Click levels to edit, double-click to rename, drag to reorder, use Save to update selected level.</p>
                   </div>
                 </>
               )}
@@ -1009,15 +1253,87 @@ export default function App() {
 
               {editorTab === 'campaign' && (
                 <div className="flex flex-col gap-3 flex-1 h-full">
-                  <button onClick={() => setCampaign([...campaign, {cols, rows, board, dialogs, goal: currentGoal}])} className="w-full py-2 bg-indigo-500/20 text-indigo-300 rounded text-[10px] font-bold border border-indigo-500/50 hover:bg-indigo-500/40">
-                    + APPEND BOARD TO CAMPAIGN
-                  </button>
+                  <div className="flex gap-2">
+                    <button onClick={() => setCampaign([...campaign, {name: `Level ${campaign.length + 1}`, cols, rows, board, dialogs, goal: currentGoal}])} className="flex-1 py-2 bg-indigo-500/20 text-indigo-300 rounded text-[10px] font-bold border border-indigo-500/50 hover:bg-indigo-500/40">
+                      + APPEND BOARD TO CAMPAIGN
+                    </button>
+                    <button 
+                      onClick={() => {
+                        if (selectedLevelIndex >= 0 && selectedLevelIndex < campaign.length) {
+                          const newCampaign = [...campaign];
+                          newCampaign[selectedLevelIndex] = {name: campaign[selectedLevelIndex].name, cols, rows, board, dialogs, goal: currentGoal};
+                          setCampaign(newCampaign);
+                        }
+                      }} 
+                      disabled={selectedLevelIndex < 0}
+                      className="flex-1 py-2 bg-emerald-500/20 text-emerald-400 rounded text-[10px] font-bold border border-emerald-500/50 hover:bg-emerald-500/40 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      SAVE TO LEVEL {selectedLevelIndex >= 0 ? (campaign[selectedLevelIndex]?.name || `Level ${selectedLevelIndex + 1}`) : '?'}
+                    </button>
+                  </div>
                   
                   <div className="flex-1 overflow-y-auto space-y-1.5 bg-slate-950 p-2 rounded border border-slate-800 min-h-[100px]">
                      {campaign.map((lvl, i) => (
-                       <div key={i} className="flex justify-between items-center bg-slate-900 p-1.5 rounded text-xs border border-slate-800">
-                         <span className="font-bold text-slate-300">Lvl {i+1} <span className="text-slate-500 text-[10px]">({lvl.cols}x{lvl.rows})</span></span>
-                         <button onClick={() => setCampaign(campaign.filter((_, idx) => idx !== i))} className="text-rose-500 hover:text-rose-400 font-black px-2">X</button>
+                       <div 
+                         key={i} 
+                         draggable={renamingIndex !== i}
+                         onDragStart={(e) => renamingIndex !== i && handleDragStart(e, i)}
+                         onDragOver={(e) => renamingIndex !== i && handleDragOver(e)}
+                         onDrop={(e) => renamingIndex !== i && handleDrop(e, i)}
+                         className={`flex justify-between items-center p-1.5 rounded text-xs border cursor-pointer transition-colors ${
+                           selectedLevelIndex === i 
+                             ? 'bg-indigo-900/50 border-indigo-500 text-indigo-200' 
+                             : draggedIndex === i
+                             ? 'bg-slate-700 border-slate-600'
+                             : 'bg-slate-900 border-slate-800 hover:bg-slate-800 text-slate-300'
+                         }`}
+                         onClick={() => {
+                           if (renamingIndex === i) return; // Don't select when renaming
+                           setSelectedLevelIndex(i);
+                           loadLevel(lvl);
+                         }}
+                         onDoubleClick={() => setRenamingIndex(i)}
+                       >
+                         {renamingIndex === i ? (
+                           <input
+                             autoFocus
+                             defaultValue={lvl.name || `Level ${i+1}`}
+                             onBlur={(e) => {
+                               const newName = e.target.value.trim();
+                               if (newName) {
+                                 const newCampaign = [...campaign];
+                                 newCampaign[i] = {...newCampaign[i], name: newName};
+                                 setCampaign(newCampaign);
+                               }
+                               setRenamingIndex(-1);
+                             }}
+                             onKeyDown={(e) => {
+                               if (e.key === 'Enter') {
+                                 e.target.blur();
+                               } else if (e.key === 'Escape') {
+                                 setRenamingIndex(-1);
+                               }
+                             }}
+                             className="bg-slate-800 text-slate-200 text-xs px-1 py-0.5 rounded border border-slate-600 outline-none flex-1 mr-2"
+                             onClick={(e) => e.stopPropagation()}
+                           />
+                         ) : (
+                           <span className="font-bold flex-1">{lvl.name || `Level ${i+1}`} <span className="text-slate-500 text-[10px]">({lvl.cols}x{lvl.rows})</span></span>
+                         )}
+                         {renamingIndex !== i && (
+                           <button 
+                             onClick={(e) => {
+                               e.stopPropagation();
+                               setCampaign(campaign.filter((_, idx) => idx !== i));
+                               if (selectedLevelIndex === i) setSelectedLevelIndex(-1);
+                               else if (selectedLevelIndex > i) setSelectedLevelIndex(selectedLevelIndex - 1);
+                               if (renamingIndex === i) setRenamingIndex(-1);
+                             }} 
+                             className="text-rose-500 hover:text-rose-400 font-black px-2"
+                           >
+                             X
+                           </button>
+                         )}
                        </div>
                      ))}
                      {campaign.length === 0 && <p className="text-[10px] text-slate-600 text-center py-4">Campaign Empty</p>}
@@ -1056,24 +1372,30 @@ export default function App() {
                )}
                {gameOver ? (
                   <div className="text-center p-4 bg-slate-950 rounded-xl border border-slate-800 shadow-xl">
-                    <h2 className="text-xl font-black text-white mb-2">{appMode === 'campaign' ? 'LEVEL COMPLETE' : 'MATCH OVER'}</h2>
-                    <p className="text-slate-300 text-sm mb-4 font-bold text-amber-400">{winMessage}</p>
-                    
-                    {appMode === 'campaign' && campaignIndex < campaign.length - 1 ? (
-                       <button onClick={() => { setCampaignIndex(campaignIndex + 1); loadLevel(campaign[campaignIndex + 1]); }} className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-sm font-bold">
-                         NEXT LEVEL &rarr;
-                       </button>
+                    <h2 className={`text-xl font-black mb-2 ${failState ? 'text-rose-400' : 'text-white'}`}>{failState ? 'LEVEL FAILED' : (appMode === 'campaign' ? 'LEVEL COMPLETE' : 'MATCH OVER')}</h2>
+                    <p className={`text-sm mb-4 font-bold ${failState ? 'text-rose-400' : 'text-amber-400'}`}>{winMessage}</p>
+                    {failState ? (
+                      <button
+                        onClick={() => { loadLevel(campaign[campaignIndex]); setFailState(false); }}
+                        className="w-full py-2 bg-rose-600 hover:bg-rose-500 text-white rounded text-sm font-bold animate-pulse border border-rose-400"
+                      >
+                        RESTART LEVEL
+                      </button>
+                    ) : appMode === 'campaign' && campaignIndex < campaign.length - 1 ? (
+                      <button onClick={() => { setCampaignIndex(campaignIndex + 1); loadLevel(campaign[campaignIndex + 1]); setUnlockedLevels(u => u.includes(campaignIndex + 1) ? u : [...u, campaignIndex + 1]); }} className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-sm font-bold">
+                        NEXT LEVEL &rarr;
+                      </button>
                     ) : (
-                       <button onClick={() => {
-                          if (appMode === 'campaign') { setCampaignIndex(0); loadLevel(campaign[0]); }
-                          else if (isPlaytesting) {} // do nothing, handled by stop button
-                          else { 
-                              setBoard(createEmptyBoard(cols, rows)); setScores({X:0,O:0}); setDrawnLines([]); setGameOver(false); 
-                              setPan({ x: 50, y: 50 }); setZoom(1); 
-                          }
-                       }} className="w-full py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded text-sm font-bold" disabled={isPlaytesting}>
-                         {isPlaytesting ? "USE STOP BUTTON" : "PLAY AGAIN"}
-                       </button>
+                      <button onClick={() => {
+                        if (appMode === 'campaign') { setCampaignIndex(0); loadLevel(campaign[0]); }
+                        else if (isPlaytesting) {} // do nothing, handled by stop button
+                        else { 
+                            setBoard(createEmptyBoard(cols, rows)); setScores({X:0,O:0}); setDrawnLines([]); setGameOver(false); 
+                            setPan({ x: 50, y: 50 }); setZoom(1); 
+                        }
+                      }} className="w-full py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded text-sm font-bold" disabled={isPlaytesting}>
+                        {isPlaytesting ? "USE STOP BUTTON" : "PLAY AGAIN"}
+                      </button>
                     )}
                   </div>
                ) : (
