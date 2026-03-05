@@ -215,6 +215,8 @@ export default function App() {
   const [selectedLevelIndex, setSelectedLevelIndex] = useState(-1);
   const [draggedIndex, setDraggedIndex] = useState(-1);
   const [renamingIndex, setRenamingIndex] = useState(-1);
+  const [aiBehavior, setAiBehavior] = useState('standard');
+  const [aiDiff, setAiDiff] = useState('hard');
   const handleDragStart = (e, index) => {
     setDraggedIndex(index);
     e.dataTransfer.effectAllowed = 'move';
@@ -224,7 +226,8 @@ export default function App() {
     
     if (isBotActive && currentPlayer === 'O' && !gameOver) {
         const timer = setTimeout(() => {
-            const move = getProceduralMove(board, 'O', rows, cols);
+            // Example of passing parameters based on a level goal or hardcoded state
+                const move = getProceduralMove(board, 'O', rows, cols, aiDiff, aiBehavior);
             if (move) {
                 resolveTurn(move.x, move.y);
             }
@@ -374,46 +377,58 @@ export default function App() {
     setCols(size); setRows(size); setBoard(b); setPan({x:50, y:50}); setZoom(1); setAppMode('local');
   };
 
-  // --- FIGMA CANVAS LOGIC ---
+
+  // --- FIGMA CANVAS LOGIC (PORTED FROM ARCHITECT) ---
   const handleWheel = (e) => {
     if (appMode.includes('setup') || appMode === 'title' || appMode === 'campaign_select') return;
     e.preventDefault();
-    const zoomSensitivity = 0.0015;
+    
+    const zoomSensitivity = 0.001;
     const delta = -e.deltaY * zoomSensitivity;
-    setZoom(z => Math.max(0.2, Math.min(z + delta, 3)));
+    const nextZoom = Math.max(0.2, Math.min(zoom + delta, 3));
+
+    // Zoom toward cursor location
+    const rect = canvasRef.current.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+
+    const worldX = (mouseX - pan.x) / zoom;
+    const worldY = (mouseY - pan.y) / zoom;
+
+    setPan({
+      x: mouseX - worldX * nextZoom,
+      y: mouseY - worldY * nextZoom
+    });
+    setZoom(nextZoom);
   };
 
- const handlePointerDown = (r, c) => {
-  // setIsPainting(true); // Commented out, not defined
-  if (!board[r]) return; // Prevent TypeError if board[r] is undefined
-  const cell = board[r][c];
-  if (!cell) return; // Prevent TypeError if cell is undefined
-
-  let action = true; // default add
-  if (editorTool === 'target') {
-    action = !cell.isTarget;
-  } else if (editorTool === 'dot_locker') {
-    action = !cell.isDotLocker;
-  } else if (editorTool === 'zapspace') {
-    action = cell.type !== 'zapspace';
-  }
-  setPaintAction(action);
-  applyTool(r, c, action, editorTool); // Apply immediately to the first cell
-};
+  const handlePointerDown = (e) => {
+    lastMouse.current = { x: e.clientX, y: e.clientY };
+    
+    // Middle-click or Alt+Left-click to Pan
+    if (e.button === 1 || (e.button === 0 && (e.altKey || isSpaceHeld))) {
+      isDragging.current = true;
+      e.currentTarget.setPointerCapture(e.pointerId);
+      return;
+    }
+    
+    // Otherwise, handle regular grid interaction
+    // (Logic for handleCellInteract moved here or kept as separate check)
+  };
 
   const handlePointerMove = (e) => {
+    const dx = e.clientX - lastMouse.current.x;
+    const dy = e.clientY - lastMouse.current.y;
+    lastMouse.current = { x: e.clientX, y: e.clientY };
+
     if (isDragging.current) {
-      setPan(p => ({
-        x: p.x + (e.clientX - lastMouse.current.x),
-        y: p.y + (e.clientY - lastMouse.current.y)
-      }));
-      lastMouse.current = { x: e.clientX, y: e.clientY };
+      setPan(p => ({ x: p.x + dx, y: p.y + dy }));
     }
   };
 
-  const handlePointerUp = (e) => { 
-    if (isDragging.current) {
-      isDragging.current = false; 
+  const handlePointerUp = (e) => {
+    isDragging.current = false;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       e.currentTarget.releasePointerCapture(e.pointerId);
     }
   };
@@ -1014,11 +1029,13 @@ export default function App() {
     );
   }
 
-  function getProceduralMove(board, currentPlayer, rows, cols) {
+  /**
+ * Procedural AI Evaluator (V2)
+ * Features GOAP JSON integration, difficulty scaling, and behavioral stances.
+ */
+function getProceduralMove(board, currentPlayer, rows, cols, difficulty = 'normal', aiBehavior = 'standard') {
     const opponent = currentPlayer === 'X' ? 'O' : 'X';
-    let bestMove = null;
-    let highestUtility = -Infinity;
-
+    
     // 1. Identify valid actionable tiles
     const validMoves = [];
     for (let y = 0; y < rows; y++) {
@@ -1029,13 +1046,7 @@ export default function App() {
             }
         }
     }
-
-
-    /**
- * Executes a headless simulation of a turn, processing all Zaps, Dups, Flips, 
- * Switches, and Movers. Returns the mutated board state for utility evaluation.
- */
-function simulateTurn(currentBoard, targetX, targetY, player) {
+    function simulateTurn(currentBoard, targetX, targetY, player) {
     let b = JSON.parse(JSON.stringify(currentBoard));
     let rows = b.length;
     let cols = b[0].length;
@@ -1201,29 +1212,103 @@ function simulateTurn(currentBoard, targetX, targetY, player) {
 
     if (validMoves.length === 0) return null;
 
-    // 2. Evaluate Goals per move candidate
+    // 2. Difficulty Scaling (Random Chance Override)
+    const difficultyScales = { drunk: 1.0, easy: 0.35, normal: 0.15, hard: 0.0 };
+    const randomChance = difficultyScales[difficulty] || 0.15;
+    
+    if (Math.random() < randomChance) {
+        return validMoves[Math.floor(Math.random() * validMoves.length)];
+    }
+
+    let bestMove = null;
+    let highestUtility = -Infinity;
+
+    // 3. Stance Evaluation (Attack vs Defense thresholding)
+    const currentScoreAI = countPoints(board, currentPlayer, rows, cols);
+    const currentScorePlayer = countPoints(board, opponent, rows, cols);
+    const avgScore = Math.max(1, (currentScoreAI + currentScorePlayer) / 2);
+    
+    let isDefenseMode = false;
+    let isAttackMode = false;
+
+    if (aiBehavior === 'standard') {
+        // "player score greater than AI's score by 50% of the average"
+        if (currentScorePlayer > currentScoreAI + (avgScore * 0.5)) {
+            isDefenseMode = true;
+        } else {
+            isAttackMode = true;
+        }
+    } else if (aiBehavior === 'defensive') {
+        isDefenseMode = true;
+    } else if (aiBehavior === 'aggressive') {
+        isAttackMode = true;
+    }
+
+    // Helper: Calculates immediate spatial connection length before chain reactions
+    const getSeqLength = (brd, tx, ty, playerColor) => {
+        let maxLen = 1;
+        const dirs = [ [1,0], [0,1], [1,1], [1,-1] ];
+        for (let [dx, dy] of dirs) {
+            let len = 1;
+            let cx = tx + dx, cy = ty + dy;
+            while (cx>=0 && cx<cols && cy>=0 && cy<rows && brd[cy][cx].piece === playerColor) { len++; cx+=dx; cy+=dy; }
+            cx = tx - dx; cy = ty - dy;
+            while (cx>=0 && cx<cols && cy>=0 && cy<rows && brd[cy][cx].piece === playerColor) { len++; cx-=dx; cy-=dy; }
+            if (len > maxLen) maxLen = len;
+        }
+        return maxLen;
+    };
+
+    // 4. Evaluate Goals per move candidate
     for (const move of validMoves) {
         let utility = 0;
         
-        // Extract a pure-function variant of resolveTurn() that returns a new grid state
-        const simulatedBoard = simulateTurn(board, move.x, move.y, currentPlayer);
+        // Pure-function variant of resolveTurn()
+        const simBoard = simulateTurn(board, move.x, move.y, currentPlayer);
+        const simOppBoard = simulateTurn(board, move.x, move.y, opponent);
 
-        // --- TIER 1 GOALS: Win / Block ---
-        const currentScore = countPoints(board, currentPlayer);
-        const simScore = countPoints(simulatedBoard, currentPlayer);
+        // Sequence lookaheads
+        const aiSeq = getSeqLength(board, move.x, move.y, currentPlayer);
+        const playerThreatSeq = getSeqLength(board, move.x, move.y, opponent);
+
+        // Score diffs after chain reactions resolve
+        const aiScoreGain = countPoints(simBoard, currentPlayer, rows, cols) - currentScoreAI;
+        const playerScoreBlocked = countPoints(simOppBoard, opponent, rows, cols) - currentScorePlayer;
+
+        // --- GOAP TREE: ACTION EVALUATION ---
         
-        if (simScore > currentScore) {
-            utility += 10000; // Win -> Get more points -> Scored 3 in a row
+        // "finish the 5 tower"
+        if (aiSeq >= 5) utility += 20000;
+        
+        // "attempt to set up a 5 in a row -> finish 4 -> finish 3"
+        if (aiScoreGain > 0) utility += 10000 + (aiSeq * 1000); 
+
+        // "block any found 3 in a row before they happen" & "player nearing 4"
+        if (playerScoreBlocked > 0) {
+            // "prioritize higher scoring blocks over lower scoring ones"
+            utility += 8000 + (playerThreatSeq * 500); 
         }
 
-        const simOpponentBoard = simulateTurn(board, move.x, move.y, opponent);
-        if (countPoints(simOpponentBoard, opponent) > countPoints(board, opponent)) {
-            utility += 8000; // Block -> Prevent opponent from getting 3 in a row
+        // --- STANCE MODIFIERS ---
+        if (isDefenseMode) {
+            // "go into defense mode": massively inflate blocking values
+            if (playerThreatSeq >= 2) utility += 5000;
+            if (aiBehavior === 'defensive' && utility === 0) {
+                // "random placement" fallback if nothing to defend
+                utility += Math.random() * 50; 
+            }
         }
 
-        // --- TIER 2 GOALS: Positional Geometry ---
-        // x-1 is blocked -> place symbol at x+1
+        if (isAttackMode) {
+            // "go into attack mode": value building lines higher than blocking small ones
+            utility += (aiSeq * 500);
+        }
+
+        // Positional Geometry Fallback
         utility += evaluateGeometricExtension(board, move.x, move.y, currentPlayer, opponent, cols, rows);
+
+        // Add a tiny bit of noise to prevent AI from looping identically on identical scores
+        utility += Math.random();
 
         if (utility > highestUtility) {
             highestUtility = utility;
