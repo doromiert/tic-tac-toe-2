@@ -16,7 +16,7 @@ const DEFAULT_CAMPAIGN_FALLBACK = [
       { name: "Commander", text: "Get a combo of 1 extra turn (score a line of 4) to pass this test." }
     ],
     goal: { type: 'min_combo', target: 1 },
-    board: Array(5).fill(null).map(() => Array(5).fill(null).map(() => ({ type: 'empty', walls: {r:false, b:false, br:false, bl:false}, dead: false, lineId: null, isTarget: false })))
+    board: Array(5).fill(null).map(() => Array(5).fill(null).map(() => ({ type: 'empty', walls: {r:false, b:false, br:false, bl:false}, dead: false, lineId: null, isTarget: false, mechanicalLock: false })))
   }
 ];
 
@@ -69,11 +69,11 @@ const IconFlip = () => (
   </svg>
 );
 const IconLockedMech = () => (
-  <svg viewBox="0 0 24 24" className="w-1/2 h-1/2 text-slate-500/70 pointer-events-none select-none" fill="currentColor">
+  <svg viewBox="0 0 32 32" className="w-2/3 h-2/3 text-slate-500/70 pointer-events-none select-none" fill="currentColor">
     <circle cx="6" cy="6" r="2.5" />
-    <circle cx="18" cy="6" r="2.5" />
-    <circle cx="6" cy="18" r="2.5" />
-    <circle cx="18" cy="18" r="2.5" />
+    <circle cx="26" cy="6" r="2.5" />
+    <circle cx="6" cy="26" r="2.5" />
+    <circle cx="26" cy="26" r="2.5" />
   </svg>
 );
 
@@ -91,7 +91,7 @@ const downloadJSON = (data, filename) => {
   URL.revokeObjectURL(url);
 };
 const createEmptyBoard = (c, r) => Array(r).fill(null).map(() => 
-  Array(c).fill(null).map(() => ({ type: 'empty', walls: {r:false, b:false, br:false, bl:false}, dead: false, lineId: null, isTarget: false }))
+  Array(c).fill(null).map(() => ({ type: 'empty', walls: {r:false, b:false, br:false, bl:false}, dead: false, lineId: null, isTarget: false, mechanicalLock: false }))
 );
 
 export default function App() {
@@ -585,7 +585,7 @@ export default function App() {
 
       if (editorTool === 'target_toggle') {
          if (e.type === 'pointerdown') b[y][x].isTarget = !b[y][x].isTarget;
-         else if (e.type === 'pointerenter' && e.buttons === 1) b[y][x].isTarget = true; // Drag to paint targets
+         else if (e.type === 'pointerenter' && e.buttons === 1) b[y][x].isTarget = !b[y][x].isTarget; // Drag to toggle targets
       } else if (editorTool === 'place_x') {
          if (e.type === 'pointerdown' || (e.type === 'pointerenter' && e.buttons === 1)) {
             b[y][x] = { ...b[y][x], piece: 'X' };
@@ -594,10 +594,21 @@ export default function App() {
          if (e.type === 'pointerdown' || (e.type === 'pointerenter' && e.buttons === 1)) {
             b[y][x] = { ...b[y][x], piece: 'O' };
          }
+      } else if (editorTool === 'locked_mech') {
+         if (e.type === 'pointerdown' || (e.type === 'pointerenter' && e.buttons === 1)) {
+            // Can be placed on any element except duplicator, rotate, void, and zapspace
+            const forbiddenTypes = ['dup', 'rot_cw', 'rot_ccw', 'void', 'zapspace'];
+            if (!forbiddenTypes.includes(b[y][x].type)) {
+               b[y][x] = { ...b[y][x], mechanicalLock: !b[y][x].mechanicalLock };
+            }
+         }
       } else if (editorTool !== 'wall') {
          const finalDir = ['dup', 'zap', 'mov'].includes(editorTool) ? lastMouseDir.current : editorDir;
          b[y][x] = { ...b[y][x], type: editorTool, dir: finalDir, letter: editorLetter };
-         if (editorTool === 'empty' || editorTool === 'void') b[y][x].piece = null;
+         if (editorTool === 'empty' || editorTool === 'void') {
+            b[y][x].piece = null;
+            b[y][x].mechanicalLock = false;
+         }
       }
       setBoard(b);
       return;
@@ -606,7 +617,7 @@ export default function App() {
     let target = board[y][x];
     if (target.type === 'void') return;
     if (target.type === 'locked_letter' && !target.unlocked) return;
-    if (target.type === 'locked_mech' || target.type === 'dup' || target.type === 'zapspace') return; 
+    if (target.type === 'locked_mech' || target.mechanicalLock || target.type === 'dup' || target.type === 'zapspace') return; 
     if (target.piece) return; 
 
     resolveTurn(x, y);
@@ -932,6 +943,7 @@ export default function App() {
                     <p><strong>Brush:</strong> Drag mouse across tiles to paint. Entities will face your drag direction!</p>
                     <p><strong>Walls:</strong> Click Edges for orthogonal walls. Click Corners for diagonal blocks.</p>
                     <p><strong>Pieces:</strong> Place predefined X and O pieces for puzzle setups.</p>
+                    <p><strong>Lock Dot:</strong> Toggle mechanical locks as overlays on most cell types.</p>
                   </div>
                 </>
               )}
@@ -1224,6 +1236,12 @@ export default function App() {
                                ${cell.unlocked ? 'border-slate-700 text-slate-700' : 'border-slate-500 text-slate-400'}`}>
                                {cell.letter}
                              </div>
+                          )}
+
+                          {cell.mechanicalLock && (
+                            <div className="absolute z-5 inset-0 flex items-center justify-center pointer-events-none">
+                              <IconLockedMech />
+                            </div>
                           )}
 
                           {cell.piece && (
