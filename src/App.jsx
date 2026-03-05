@@ -990,7 +990,7 @@ export default function App() {
 
               {editorTab === 'dialog' && (
                  <div className="flex flex-col gap-3">
-                    <div className="max-h-80 overflow-y-auto space-y-2 pr-1">
+                    <div className="overflow-y-auto space-y-2 pr-1">
                        {dialogs.map((d, i) => (
                           <div key={i} className="bg-slate-950 p-2 rounded border border-slate-800 flex flex-col gap-1.5">
                              <div className="flex justify-between items-center gap-2">
