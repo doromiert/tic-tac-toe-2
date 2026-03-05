@@ -94,6 +94,12 @@ const createEmptyBoard = (c, r) => Array(r).fill(null).map(() =>
 );
     
 export default function App() {
+    /**
+ * Procedural AI Evaluator
+ * Evaluates the board using a prioritized, backwards-chained goal matrix.
+ */
+
+
     const skipDialog = () => {
         setShowDialog(false);
         setDialogIndex(dialogs.length);
@@ -213,6 +219,20 @@ export default function App() {
     setDraggedIndex(index);
     e.dataTransfer.effectAllowed = 'move';
   };
+  useEffect(() => {
+    const isBotActive = (appMode === 'solo' || (appMode === 'campaign' && currentGoal.type === 'standard'));
+    
+    if (isBotActive && currentPlayer === 'O' && !gameOver) {
+        const timer = setTimeout(() => {
+            const move = getProceduralMove(board, 'O', rows, cols);
+            if (move) {
+                resolveTurn(move.x, move.y);
+            }
+        }, 400); 
+        
+        return () => clearTimeout(timer);
+    }
+}, [currentPlayer, appMode, currentGoal, board, gameOver]);
 
   const handleDragOver = (e) => {
     e.preventDefault();
@@ -792,7 +812,7 @@ export default function App() {
     if (totalExtra > 0) {
       setExtraTurns(totalExtra - 1);
     } else {
-      setCurrentPlayer(p => (appMode === 'solo' || appMode === 'campaign') ? 'X' : (p === 'X' ? 'O' : 'X'));
+        setCurrentPlayer(p => ((appMode === 'solo' || appMode === 'campaign') && currentGoal.type !== 'standard') ? 'X' : (p === 'X' ? 'O' : 'X'));
     }
   };
 
@@ -841,6 +861,10 @@ export default function App() {
     if (target.type === 'locked_letter' && !target.unlocked) return;
     if (target.type === 'locked_mech' || target.mechanicalLock || target.type === 'dup' || target.type === 'zapspace') return; 
     if (target.piece) return; 
+
+    if (currentPlayer === 'O' && appMode !== 'local' && appMode !== 'multiplayer') {
+        return;
+    }
 
     resolveTurn(x, y);
   };
@@ -990,6 +1014,359 @@ export default function App() {
     );
   }
 
+  function getProceduralMove(board, currentPlayer, rows, cols) {
+    const opponent = currentPlayer === 'X' ? 'O' : 'X';
+    let bestMove = null;
+    let highestUtility = -Infinity;
+
+    // 1. Identify valid actionable tiles
+    const validMoves = [];
+    for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+            const cell = board[y][x];
+            if (cell.type !== 'void' && cell.type !== 'locked_mech' && !cell.mechanicalLock && !cell.piece) {
+                validMoves.push({ x, y });
+            }
+        }
+    }
+
+
+    /**
+ * Executes a headless simulation of a turn, processing all Zaps, Dups, Flips, 
+ * Switches, and Movers. Returns the mutated board state for utility evaluation.
+ */
+function simulateTurn(currentBoard, targetX, targetY, player) {
+    let b = JSON.parse(JSON.stringify(currentBoard));
+    let rows = b.length;
+    let cols = b[0].length;
+    
+    let q = [{ x: targetX, y: targetY, piece: player, overwrite: false }];
+    let linesToErase = new Set();
+
+    // --- PHASE 1: ZAPS, DUPS, FLIPS, SWITCHES ---
+    const processReactions = (queue) => {
+        let iters = 0;
+        while (queue.length > 0 && iters < MAX_ITERATIONS) {
+            iters++;
+            let { x, y, piece, overwrite } = queue.shift();
+            if (y < 0 || y >= rows || x < 0 || x >= cols) continue;
+            if (b[y][x].type === 'void') continue;
+
+            let cx = x, cy = y;
+            
+            if (b[cy][cx].type === 'zap') {
+                while (true) {
+                    let dir = b[cy][cx].dir;
+                    let nx = cx + (dir === 'r' ? 1 : dir === 'l' ? -1 : 0);
+                    let ny = cy + (dir === 'd' ? 1 : dir === 'u' ? -1 : 0);
+                    if (ny < 0 || ny >= rows || nx < 0 || nx >= cols) break;
+                    if (b[ny][nx].type === 'void') break;
+                    
+                    let blocked = false;
+                    if (dir === 'r' && b[cy][cx].walls.r) blocked = true;
+                    if (dir === 'l' && b[ny][nx].walls.r) blocked = true;
+                    if (dir === 'd' && b[cy][cx].walls.b) blocked = true;
+                    if (dir === 'u' && b[ny][nx].walls.b) blocked = true;
+                    
+                    let nextCell = b[ny][nx];
+                    if (blocked || (nextCell.type === 'locked_letter' && !nextCell.unlocked) || nextCell.piece) break;
+                    
+                    cx = nx; cy = ny;
+                    if (nextCell.type !== 'zap') break; 
+                }
+            }
+
+            let cell = b[cy][cx];
+            if (cell.type === 'locked_letter' && !cell.unlocked) continue;
+            if (cell.type === 'dup' || cell.type === 'zapspace' || cell.type === 'void') continue;
+            if (cell.piece && !overwrite) continue;
+
+            if (cell.piece && cell.dead && overwrite && cell.lineId) {
+                linesToErase.add(cell.lineId);
+            }
+
+            if (cell.type === 'flip') piece = (piece === 'X' ? 'O' : 'X');
+
+            cell.piece = piece;
+            cell.dead = false;
+            cell.lineId = null;
+
+            if (cell.type === 'switch') {
+                b.forEach(r => r.forEach(c => {
+                    if (c.type === 'locked_letter' && c.letter === cell.letter) c.unlocked = true;
+                }));
+            }
+
+            const checkDup = (dx, dy, targetDir, pushX, pushY) => {
+                let neighbor = b[cy + dy]?.[cx + dx];
+                if (neighbor?.type === 'dup' && neighbor.dir === targetDir) {
+                    queue.push({ x: cx + pushX, y: cy + pushY, piece, overwrite: true });
+                }
+            };
+            checkDup(1, 0, 'r', 2, 0);   
+            checkDup(-1, 0, 'l', -2, 0);
+            checkDup(0, 1, 'd', 0, 2);
+            checkDup(0, -1, 'u', 0, -2);
+        }
+    };
+
+    processReactions(q);
+
+    // --- PHASE 2: MOVERS AND ROTATORS ---
+    let moverQueue = [];
+    b.forEach((row, y) => {
+        row.forEach((cell, x) => {
+            if (cell.type === 'mov' && cell.piece && !cell.dead) {
+                let nx = x + (cell.dir === 'r' ? 1 : cell.dir === 'l' ? -1 : 0);
+                let ny = y + (cell.dir === 'd' ? 1 : cell.dir === 'u' ? -1 : 0);
+                let blocked = false;
+                
+                if (cell.dir === 'r' && cell.walls.r) blocked = true;
+                if (cell.dir === 'l' && nx >= 0 && b[ny][nx].walls.r) blocked = true;
+                if (cell.dir === 'd' && cell.walls.b) blocked = true;
+                if (cell.dir === 'u' && ny >= 0 && b[ny][nx].walls.b) blocked = true;
+                
+                if (!blocked && nx >= 0 && nx < cols && ny >= 0 && ny < rows && b[ny][nx].type === 'mov') {
+                    let nextMov = b[ny][nx];
+                    let nnx = nx + (nextMov.dir === 'r' ? 1 : nextMov.dir === 'l' ? -1 : 0);
+                    let nny = ny + (nextMov.dir === 'd' ? 1 : nextMov.dir === 'u' ? -1 : 0);
+                    let nextBlocked = false;
+                    
+                    if (nextMov.dir === 'r' && nextMov.walls.r) nextBlocked = true;
+                    if (nextMov.dir === 'l' && nnx >= 0 && b[nny][nnx].walls.r) nextBlocked = true;
+                    if (nextMov.dir === 'd' && nextMov.walls.b) nextBlocked = true;
+                    if (nextMov.dir === 'u' && nny >= 0 && b[nny][nnx].walls.b) nextBlocked = true;
+                    
+                    if (nextBlocked || nnx < 0 || nnx >= cols || nny < 0 || nny >= rows || b[nny][nnx].type === 'void') {
+                        blocked = true;
+                    }
+                }
+                
+                if (!blocked && nx >= 0 && nx < cols && ny >= 0 && ny < rows && b[ny][nx].type !== 'void') {
+                    moverQueue.push({from: {x,y}, to: {x:nx, y:ny}, piece: cell.piece, rotation: cell.rotation || 0, isRot: false});
+                }
+            }
+            if ((cell.type === 'rot_cw' || cell.type === 'rot_ccw') && !cell.dead) {
+                let isCW = cell.type === 'rot_cw';
+                const orthogonalDirs = [[0,-1], [1,0], [0,1], [-1,0]]; 
+                
+                orthogonalDirs.forEach(([dx, dy]) => {
+                    let px = x + dx, py = y + dy;
+                    if (px >= 0 && px < cols && py >= 0 && py < rows && b[py][px].type !== 'void') {
+                        let pCell = b[py][px];
+                        if (pCell.piece && !pCell.dead) {
+                            let nx = x + (isCW ? -dy : dy);
+                            let ny = y + (isCW ? dx : -dx);
+                            if (nx >= 0 && nx < cols && ny >= 0 && ny < rows && b[ny][nx].type !== 'void') {
+                                moverQueue.push({from: {x:px, y:py}, to: {x:nx, y:ny}, piece: pCell.piece, rotation: pCell.rotation || 0, isRot: true, isCW});
+                            }
+                        }
+                    }
+                });
+            }
+        });
+    });
+
+    moverQueue.forEach(m => b[m.from.y][m.from.x].piece = null); 
+    
+    let newQueue = [];
+    moverQueue.forEach(m => {
+        let target = b[m.to.y][m.to.x];
+        if (!target.piece && !target.type.startsWith('locked') && target.type !== 'dup' && target.type !== 'zapspace' && target.type !== 'void') {
+            target.piece = m.piece;
+            target.rotation = m.isRot ? m.rotation + (m.isCW ? 90 : -90) : m.rotation;
+            newQueue.push({x: m.to.x, y: m.to.y, piece: m.piece, overwrite: false});
+        } else {
+            b[m.from.y][m.from.x].piece = m.piece; 
+            b[m.from.y][m.from.x].rotation = m.rotation;
+        }
+    });
+
+    if (newQueue.length > 0) processReactions(newQueue);
+
+    // --- PHASE 3: LINE REVIVALS ---
+    if (linesToErase.size > 0) {
+        linesToErase.forEach(id => {
+            b.forEach(row => row.forEach(c => {
+                if (c.lineId === id) {
+                    c.dead = false;
+                    c.lineId = null;
+                }
+            }));
+        });
+    }
+
+    return b;
+}
+
+    if (validMoves.length === 0) return null;
+
+    // 2. Evaluate Goals per move candidate
+    for (const move of validMoves) {
+        let utility = 0;
+        
+        // Extract a pure-function variant of resolveTurn() that returns a new grid state
+        const simulatedBoard = simulateTurn(board, move.x, move.y, currentPlayer);
+
+        // --- TIER 1 GOALS: Win / Block ---
+        const currentScore = countPoints(board, currentPlayer);
+        const simScore = countPoints(simulatedBoard, currentPlayer);
+        
+        if (simScore > currentScore) {
+            utility += 10000; // Win -> Get more points -> Scored 3 in a row
+        }
+
+        const simOpponentBoard = simulateTurn(board, move.x, move.y, opponent);
+        if (countPoints(simOpponentBoard, opponent) > countPoints(board, opponent)) {
+            utility += 8000; // Block -> Prevent opponent from getting 3 in a row
+        }
+
+        // --- TIER 2 GOALS: Positional Geometry ---
+        // x-1 is blocked -> place symbol at x+1
+        utility += evaluateGeometricExtension(board, move.x, move.y, currentPlayer, opponent, cols, rows);
+
+        if (utility > highestUtility) {
+            highestUtility = utility;
+            bestMove = move;
+        }
+    }
+
+    return bestMove;
+}
+
+/**
+ * Maps the specific backwards constraint: 
+ * "there's already a symbol at x,y -> x-1 is blocked -> place at x+1"
+ */
+function evaluateGeometricExtension(board, x, y, player, opponent, cols, rows) {
+    let score = 0;
+
+    // Horizontal Checks
+    if (x > 0 && board[y][x - 1].piece === player) {
+        // Look at the left side of the adjacent piece
+        let leftBoundary = (x - 1 === 0);
+        let leftWallBlocked = x > 1 && board[y][x - 2].walls.r;
+        
+        if (leftBoundary || leftWallBlocked) {
+            score += 50; // Forced extension to the right (x+1) because x-1 is blocked
+        } else {
+            score += 10; // Standard adjacency
+        }
+    }
+
+    // Vertical Checks
+    if (y > 0 && board[y - 1][x].piece === player) {
+        let topBoundary = (y - 1 === 0);
+        let topWallBlocked = y > 1 && board[y - 2][x].walls.b;
+        
+        if (topBoundary || topWallBlocked) {
+            score += 50; 
+        } else {
+            score += 10;
+        }
+    }
+
+    // Opponent Blocking Check
+    // User placed symbol at x-1 -> block at x
+    if (x > 0 && board[y][x - 1].piece === opponent) {
+        score += 30;
+    }
+    if (y > 0 && board[y - 1][x].piece === opponent) {
+        score += 30;
+    }
+
+    return score;
+}
+
+// WHITEBOARD: countPoints Logic
+// 1. Iterate through all board vectors (Horizontal, Vertical, Diagonal L/R).
+// 2. Traverse tiles to accumulate contiguous sequences of targetPlayer pieces or wildcards (zapspace).
+// 3. Break the sequence if blocked by a wall, void, dead piece, or opponent piece.
+// 4. Validate the sequence by checking if the distance between the first and last player piece is >= 3.
+// 5. Increment the simulated score for every valid sequence.
+
+function countPoints(boardState, targetPlayer, rows, cols) {
+    let score = 0;
+
+    const evalSeq = (seq) => {
+        let firstIdx = seq.findIndex(i => i.cell.piece === targetPlayer);
+        let lastIdx = seq.findLastIndex(i => i.cell.piece === targetPlayer);
+        
+        if (firstIdx !== -1 && lastIdx !== -1 && (lastIdx - firstIdx + 1) >= 3) {
+            score++;
+        }
+    };
+
+    const checkLine = (startX, startY, dx, dy) => {
+        let run = [];
+        let cx = startX, cy = startY;
+
+        while (cx >= 0 && cx < cols && cy >= 0 && cy < rows) {
+            let cell = boardState[cy][cx];
+            
+            if (cell.type === 'void') {
+                evalSeq(run);
+                run = [];
+                cx += dx;
+                cy += dy;
+                continue;
+            }
+
+            let nextX = cx + dx, nextY = cy + dy;
+            let blocked = false;
+            
+            if (nextX >= 0 && nextX < cols && nextY >= 0 && nextY < rows) {
+                if (dx === 1 && dy === 0 && cell.walls.r) blocked = true;
+                if (dx === 0 && dy === 1 && cell.walls.b) blocked = true;
+                if (dx === 1 && dy === 1 && boardState[cy]?.[nextX]?.walls?.bl) blocked = true;
+                if (dx === -1 && dy === 1 && boardState[cy]?.[nextX]?.walls?.br) blocked = true;
+            } else {
+                blocked = true;
+            }
+
+            let isDead = cell.dead;
+            let isWild = cell.type === 'zapspace';
+
+            if (!isDead && (cell.piece === targetPlayer || isWild)) {
+                run.push({ cell });
+            } else {
+                evalSeq(run);
+                run = [];
+            }
+
+            if (blocked) {
+                evalSeq(run);
+                run = [];
+            }
+
+            cx = nextX;
+            cy = nextY;
+        }
+        if (run.length > 0) evalSeq(run);
+    };
+
+    // Horizontal & Vertical
+    for (let y = 0; y < rows; y++) checkLine(0, y, 1, 0);
+    for (let x = 0; x < cols; x++) checkLine(x, 0, 0, 1);
+    
+    // Diagonal Down-Right
+    for (let y = 0; y < rows; y++) checkLine(0, y, 1, 1);
+    for (let x = 1; x < cols; x++) checkLine(x, 0, 1, 1);
+    
+    // Diagonal Down-Left
+    for (let y = 0; y < rows; y++) checkLine(cols - 1, y, -1, 1);
+    for (let x = 0; x < cols - 1; x++) checkLine(x, 0, -1, 1);
+
+    return score;
+}
+
+// WHITEBOARD: Bot Execution Hook
+// 1. Verify appMode is either 'solo' or 'campaign'.
+// 2. Verify currentGoal.type is 'standard'.
+// 3. Ensure it is the bot's turn ('O') and the board is not in a game over state.
+// 4. Trigger the procedural logic.
+
+
  
 
   // --- MAIN GAME UI ---
@@ -1099,7 +1476,7 @@ export default function App() {
             <span className="text-xl font-black">X</span>
             <span className="text-xs">{(appMode === 'solo' || appMode === 'campaign') ? 'YOU' : 'P1'}: <strong className="text-white text-base">{scores.X}</strong></span>
           </div>
-          {(appMode === 'local' || appMode === 'editor') && (
+          {(appMode === 'local' || appMode === 'editor' || (appMode === 'campaign' && currentGoal.type === 'standard') || (appMode === 'solo' && currentGoal.type === 'standard')) && (
             <div className={`flex items-center gap-2 ${currentPlayer === 'O' ? 'text-rose-400' : 'text-slate-500'}`}>
               <span className="text-xl font-black">O</span>
               <span className="text-xs">P2: <strong className="text-white text-base">{scores.O}</strong></span>
