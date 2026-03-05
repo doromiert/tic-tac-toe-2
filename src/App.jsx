@@ -586,6 +586,14 @@ export default function App() {
       if (editorTool === 'target_toggle') {
          if (e.type === 'pointerdown') b[y][x].isTarget = !b[y][x].isTarget;
          else if (e.type === 'pointerenter' && e.buttons === 1) b[y][x].isTarget = true; // Drag to paint targets
+      } else if (editorTool === 'place_x') {
+         if (e.type === 'pointerdown' || (e.type === 'pointerenter' && e.buttons === 1)) {
+            b[y][x] = { ...b[y][x], piece: 'X' };
+         }
+      } else if (editorTool === 'place_o') {
+         if (e.type === 'pointerdown' || (e.type === 'pointerenter' && e.buttons === 1)) {
+            b[y][x] = { ...b[y][x], piece: 'O' };
+         }
       } else if (editorTool !== 'wall') {
          const finalDir = ['dup', 'zap', 'mov'].includes(editorTool) ? lastMouseDir.current : editorDir;
          b[y][x] = { ...b[y][x], type: editorTool, dir: finalDir, letter: editorLetter };
@@ -880,7 +888,14 @@ export default function App() {
                     ))}
                   </div>
 
-                  <label className="text-[10px] text-slate-500 font-bold uppercase mt-2 block">Special</label>
+                  <label className="text-[10px] text-slate-500 font-bold uppercase mt-2 block">Pieces</label>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {['place_x', 'place_o'].map(t => (
+                      <button key={t} onClick={() => setEditorTool(t)} className={`p-1.5 rounded border text-[10px] uppercase font-bold ${editorTool === t ? 'bg-green-500/30 border-green-400 text-green-200' : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700'}`}>
+                        {t === 'place_x' ? 'PLACE X' : 'PLACE O'}
+                      </button>
+                    ))}
+                  </div>
                   <div className="grid grid-cols-3 gap-1.5">
                     {['zapspace', 'flip', 'switch'].map(t => (
                       <button key={t} onClick={() => setEditorTool(t)} className={`p-1.5 rounded border text-[10px] uppercase font-bold ${editorTool === t ? 'bg-indigo-500/30 border-indigo-400 text-indigo-200' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
@@ -916,6 +931,7 @@ export default function App() {
                   <div className="text-[10px] text-slate-400 mt-2 p-2 bg-slate-950 rounded leading-relaxed border border-slate-800">
                     <p><strong>Brush:</strong> Drag mouse across tiles to paint. Entities will face your drag direction!</p>
                     <p><strong>Walls:</strong> Click Edges for orthogonal walls. Click Corners for diagonal blocks.</p>
+                    <p><strong>Pieces:</strong> Place predefined X and O pieces for puzzle setups.</p>
                   </div>
                 </>
               )}
