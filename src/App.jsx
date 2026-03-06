@@ -6,19 +6,12 @@ import { collection, doc, setDoc, getDoc, onSnapshot, addDoc } from 'firebase/fi
 
 // REPLACE THIS with your actual config from Firebase
 const firebaseConfig = {
-
   apiKey: "AIzaSyD3ZQ5HQOKuGL7JAzEeeOM1YDcJWHeOlH0",
-
   authDomain: "tic-tac-toe-2-4c9e8.firebaseapp.com",
-
   projectId: "tic-tac-toe-2-4c9e8",
-
   storageBucket: "tic-tac-toe-2-4c9e8.firebasestorage.app",
-
   messagingSenderId: "398580270686",
-
   appId: "1:398580270686:web:1a2924b5db52523dae16cf"
-
 };
 
 
@@ -756,6 +749,8 @@ useEffect(() => {
      const applyGravity = (b) => {
         let newBoard = JSON.parse(JSON.stringify(b));
         let changed = true;
+        const blockingTypes = ['void', 'locked_mech', 'locked_letter', 'rot_cw', 'rot_ccw', 'dup', 'zapspace'];
+        
         while (changed) {
             changed = false;
             for (let x = 0; x < cols; x++) {
@@ -763,8 +758,8 @@ useEffect(() => {
                     const current = newBoard[y][x];
                     const below = newBoard[y + 1][x];
                     
-                    if (current.piece && !current.mechanicalLock && current.type !== 'locked_mech') {
-                        if (!below.piece && below.type !== 'void' && !below.mechanicalLock && below.type !== 'locked_mech' && below.type !== 'locked_letter') {
+                    if (current.piece && !current.mechanicalLock && current.type !== 'locked_mech' && !current.walls?.b) {
+                        if (!below.piece && !below.mechanicalLock && !blockingTypes.includes(below.type)) {
                             below.piece = current.piece;
                             below.rotation = current.rotation;
                             current.piece = null;
@@ -1480,9 +1475,15 @@ const getProceduralMove = (board, aiPiece, rows, cols, difficulty, aiBehavior, g
     // --- NEW: Gravity Prediction for Cascade ---
     const getGravityY = (startX, startY) => {
         let finalY = startY;
+        const blockingTypes = ['void', 'locked_mech', 'locked_letter', 'rot_cw', 'rot_ccw', 'dup', 'zapspace'];
+        
         while (finalY + 1 < rows) {
+            let current = board[finalY][startX];
             let below = board[finalY + 1][startX];
-            if (!below.piece && below.type !== 'void' && !below.mechanicalLock && below.type !== 'locked_mech' && below.type !== 'locked_letter') {
+            
+            if (current.walls?.b) break;
+            
+            if (!below.piece && !below.mechanicalLock && !blockingTypes.includes(below.type)) {
                 finalY++;
             } else {
                 break;
