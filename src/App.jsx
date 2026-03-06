@@ -182,10 +182,12 @@ export default function App() {
   const [gameOver, setGameOver] = useState(false);
   const [winMessage, setWinMessage] = useState('');
   
-  // Campaign & Goals
-  const [campaign, setCampaign] = useState([]);
-  const [campaignIndex, setCampaignIndex] = useState(-1);
-  const [currentGoal, setCurrentGoal] = useState({ type: 'standard', target: 0 });
+  // Campaign & Goals
+  const [campaign, setCampaign] = useState([]);
+  const [campaignIndex, setCampaignIndex] = useState(-1);
+  const [currentGoals, setCurrentGoals] = useState([{ type: 'standard', target: 0 }]);
+  const [movesMade, setMovesMade] = useState(0);
+  const [maxComboAchieved, setMaxComboAchieved] = useState(0);
   
   // Visual Novel Dialog
   const [dialogs, setDialogs] = useState([]);
@@ -199,13 +201,13 @@ export default function App() {
 
   // Editor State
   const [editorTab, setEditorTab] = useState('tools'); 
+  const [aiBehavior, setAiBehavior] = useState('standard');
   const [editorTool, setEditorTool] = useState('empty');
   const [editorDir, setEditorDir] = useState('r');
   const [editorLetter, setEditorLetter] = useState('A');
   const [selectedLevelIndex, setSelectedLevelIndex] = useState(-1);
   const [draggedIndex, setDraggedIndex] = useState(-1);
   const [renamingIndex, setRenamingIndex] = useState(-1);
-  const [aiBehavior, setAiBehavior] = useState('standard');
   const [aiDiff, setAiDiff] = useState('hard');
   
   const handleDragStart = (e, index) => {
@@ -214,7 +216,7 @@ export default function App() {
   };
   
   useEffect(() => {
-    const isBotActive = (appMode === 'solo' || (appMode === 'campaign' && currentGoal.type === 'standard'));
+    const isBotActive = (appMode === 'solo' || (appMode === 'campaign' && currentGoals.some(g => g.type === 'standard')));
     
     if (isBotActive && currentPlayer === 'O' && !gameOver) {
         const timer = setTimeout(() => {
@@ -227,7 +229,7 @@ export default function App() {
         
         return () => clearTimeout(timer);
     }
-}, [currentPlayer, appMode, currentGoal, board, gameOver, aiDiff, aiBehavior]);
+}, [currentPlayer, appMode, currentGoals, board, gameOver, aiDiff, aiBehavior]);
 
   const handleDragOver = (e) => {
     e.preventDefault();
@@ -341,9 +343,11 @@ export default function App() {
     setBackupState(null);
     setPan({ x: 50, y: 50 }); // Reset Camera
     setZoom(1);
-    setAppMode('title');
-    setFailState(false);
-  };
+    setAppMode('title');
+    setFailState(false);
+    setMovesMade(0);
+    setMaxComboAchieved(0);
+  };
 
   const initDebugLevel = () => {
     const size = 15;
@@ -745,85 +749,71 @@ export default function App() {
     setDrawnLines(tempDrawnLines);
 
 
-    if (appMode === 'local' || isPlaytesting) {
-      if (isFull) {
-        matchOver = true;
-        wMsg = tempScores.X > tempScores.O ? 'Player X Wins!' : tempScores.O > tempScores.X ? 'Player O Wins!' : 'Tie!';
-      }
-    } else if (appMode === 'solo' || appMode === 'campaign') {
-      const g = currentGoal;
-      // Early end for these objectives
-      let failState = false;
-      if (g.type === 'fill_targets' && targetsTotal > 0 && targetsFilled === targetsTotal) {
-        matchOver = true; wMsg = 'Target Areas Filled! You Win!';
-      } else if (g.type === 'min_combo' && maxComboThisTurn >= g.target) {
-        matchOver = true; wMsg = `Combo of ${g.target} Reached! You Win!`;
-      } else if (g.type === 'exact_score' && tempScores.X === g.target) {
-        matchOver = true; wMsg = 'Exact Score Reached! You Win!';
-      }
-      // Board full end for all objectives
-      if (!matchOver && isFull) {
-        matchOver = true;
-        if (g.type === 'standard') {
-          wMsg = tempScores.X > tempScores.O ? 'Victory!' : 'Defeat!';
-          failState = tempScores.X <= tempScores.O;
-        } else if (g.type === 'exact_score') {
-          if (tempScores.X === g.target) {
-            wMsg = 'Exact Score Reached! You Win!';
-            failState = false;
-          } else {
-            wMsg = `Failed. Scored ${tempScores.X}, needed ${g.target}. Restart to try again.`;
-            failState = true;
-          }
-        } else if (g.type === 'min_score') {
-          if (tempScores.X >= g.target) {
-            wMsg = 'Score Goal Reached! You Win!';
-            failState = false;
-          } else {
-            wMsg = `Failed. Scored ${tempScores.X}, needed ${g.target}. Restart to try again.`;
-            failState = true;
-          }
-        } else if (g.type === 'max_score') {
-          if (tempScores.X <= g.target) {
-            wMsg = 'Score Kept Low! You Win!';
-            failState = false;
-          } else {
-            wMsg = `Failed. Scored ${tempScores.X}, needed under ${g.target}. Restart to try again.`;
-            failState = true;
-          }
-        } else if (g.type === 'min_combo') {
-          if (maxComboThisTurn >= g.target) {
-            wMsg = `Combo of ${g.target} Reached! You Win!`;
-            failState = false;
-          } else {
-            wMsg = `Failed. Combo of ${g.target} required. You reached ${maxComboThisTurn}. Restart to try again.`;
-            failState = true;
-          }
-        } else if (g.type === 'fill_targets') {
-          if (targetsTotal > 0 && targetsFilled === targetsTotal) {
-            wMsg = 'Target Areas Filled! You Win!';
-            failState = false;
-          } else {
-            wMsg = `Failed. Not all targets filled. Restart to try again.`;
-            failState = true;
-          }
-        } else {
-          wMsg = 'Game Over';
-        }
-      }
-      // Store fail state for UI
-      setTimeout(() => setFailState?.(failState), 0);
-    }
+    let currentMoves = currentPlayer === 'X' ? movesMade + 1 : movesMade;
+    let currentMaxCombo = Math.max(maxComboAchieved, maxComboThisTurn);
+    if (currentPlayer === 'X') {
+        setMovesMade(currentMoves);
+    }
+    setMaxComboAchieved(currentMaxCombo);
 
+    if (appMode === 'local' || isPlaytesting) {
+      if (isFull) {
+        matchOver = true;
+        wMsg = tempScores.X > tempScores.O ? 'Player X Wins!' : tempScores.O > tempScores.X ? 'Player O Wins!' : 'Tie!';
+      }
+    } else if (appMode === 'solo' || appMode === 'campaign') {
+      let failState = false;
+      let allMet = true;
+      let anyFailed = false;
+      let failMsg = '';
+      let requiresFullBoard = currentGoals.some(g => g.type === 'standard');
+      let forcedEnd = currentGoals.some(g => g.type === 'max_moves' && g.mode === 'end' && currentMoves >= g.target);
+      let isEndState = isFull || forcedEnd;
+
+      currentGoals.forEach(g => {
+          if (g.type === 'standard') {
+              if (isEndState && tempScores.X <= tempScores.O) { anyFailed = true; failMsg = 'Failed: Score too low.'; }
+              if (!isEndState) allMet = false;
+          } else if (g.type === 'exact_score') {
+              if (tempScores.X !== g.target) allMet = false;
+              if (isEndState && tempScores.X !== g.target) { anyFailed = true; failMsg = `Failed: Needed exactly ${g.target} points.`; }
+          } else if (g.type === 'min_score') {
+              if (tempScores.X < g.target) allMet = false;
+              if (isEndState && tempScores.X < g.target) { anyFailed = true; failMsg = `Failed: Needed at least ${g.target} points.`; }
+          } else if (g.type === 'max_score') {
+              if (tempScores.X > g.target) { anyFailed = true; failMsg = `Failed: Exceeded max score of ${g.target}.`; }
+          } else if (g.type === 'fill_targets') {
+              if (targetsTotal === 0 || targetsFilled < targetsTotal) allMet = false;
+              if (isEndState && (targetsTotal === 0 || targetsFilled < targetsTotal)) { anyFailed = true; failMsg = 'Failed: Not all targets filled.'; }
+          } else if (g.type === 'min_combo') {
+              if (currentMaxCombo < g.target) allMet = false;
+              if (isEndState && currentMaxCombo < g.target) { anyFailed = true; failMsg = `Failed: Needed a combo of ${g.target}.`; }
+          } else if (g.type === 'max_moves') {
+              if (currentMoves > g.target && (!g.mode || g.mode === 'fail')) { anyFailed = true; failMsg = `Failed: Exceeded limit of ${g.target} moves.`; }
+          }
+      });
+
+      if (anyFailed) {
+          matchOver = true; wMsg = failMsg; failState = true;
+      } else if (allMet && (!requiresFullBoard || isEndState)) {
+          matchOver = true; wMsg = 'Objectives Complete! You Win!'; failState = false;
+      } else if (isEndState) {
+          matchOver = true; wMsg = 'Game Over: Out of moves and objectives not met.'; failState = true;
+      }
+
+      setTimeout(() => setFailState?.(failState), 0);
+    }
+
+    setGameOver(matchOver);
     setGameOver(matchOver);
     if (matchOver) setWinMessage(wMsg);
 
     let totalExtra = extraTurns + earnedExtraTurns;
-    if (totalExtra > 0) {
-      setExtraTurns(totalExtra - 1);
-    } else {
-        setCurrentPlayer(p => ((appMode === 'solo' || appMode === 'campaign') && currentGoal.type !== 'standard') ? 'X' : (p === 'X' ? 'O' : 'X'));
-    }
+    if (totalExtra > 0) {
+      setExtraTurns(totalExtra - 1);
+    } else {
+        setCurrentPlayer(p => ((appMode === 'solo' || appMode === 'campaign') && !currentGoals.some(g => g.type === 'standard')) ? 'X' : (p === 'X' ? 'O' : 'X'));
+    }
   };
 
   const handleCellInteract = (x, y, e) => {
@@ -899,10 +889,12 @@ export default function App() {
   // --- DATA MANAGEMENT ---
   const loadLevel = (levelData) => {
     setCols(levelData.cols || levelData.gridSize || 9);
-    setRows(levelData.rows || levelData.gridSize || 9);
-    setBoard(JSON.parse(JSON.stringify(levelData.board))); 
-    setCurrentGoal(levelData.goal || { type: 'standard', target: 0 });
-    setAiBehavior(levelData.aiBehavior || 'standard');
+    setRows(levelData.rows || levelData.gridSize || 9);
+    setBoard(JSON.parse(JSON.stringify(levelData.board))); 
+    setCurrentGoals(levelData.goals || (levelData.goal ? [levelData.goal] : [{ type: 'standard', target: 0 }]));
+    setMovesMade(0);
+    setMaxComboAchieved(0);
+    setAiBehavior(levelData.aiBehavior || 'standard');
     
     let d = levelData.dialogs || [];
     if (levelData.preLevelDialog && d.length === 0) {
@@ -1017,10 +1009,10 @@ export default function App() {
                  IMPORT LEVEL JSON
                  <input type="file" accept=".json" className="hidden" onChange={(e) => handleLevelImport(e, (d) => {
                      setCols(d.cols || d.gridSize || 9);
-                     setRows(d.rows || d.gridSize || 9);
-                     setBoard(JSON.parse(JSON.stringify(d.board)));
-                     setCurrentGoal(d.goal || { type: 'standard', target: 0 });
-                     setAiBehavior(d.aiBehavior || 'standard');
+                     setRows(d.rows || d.gridSize || 9);
+                     setBoard(JSON.parse(JSON.stringify(d.board)));
+                     setCurrentGoals(d.goals || (d.goal ? [d.goal] : [{ type: 'standard', target: 0 }]));
+                     setAiBehavior(d.aiBehavior || 'standard');
                      alert("Level Loaded!");
                  })} />
                </label>
@@ -1568,8 +1560,8 @@ function countPoints(boardState, targetPlayer, rows, cols) {
             <span className="text-xl font-black">X</span>
             <span className="text-xs">{(appMode === 'solo' || appMode === 'campaign') ? 'YOU' : 'P1'}: <strong className="text-white text-base">{scores.X}</strong></span>
           </div>
-          {(appMode === 'local' || appMode === 'editor' || (appMode === 'campaign' && currentGoal.type === 'standard') || (appMode === 'solo' && currentGoal.type === 'standard')) && (
-            <div className={`flex items-center gap-2 ${currentPlayer === 'O' ? 'text-rose-400' : 'text-slate-500'}`}>
+          {(appMode === 'local' || appMode === 'editor' || ((appMode === 'campaign' || appMode === 'solo') && currentGoals.some(g => g.type === 'standard'))) && (
+            <div className={`flex items-center gap-2 ${currentPlayer === 'O' ? 'text-rose-400' : 'text-slate-500'}`}>
               <span className="text-xl font-black">O</span>
               <span className="text-xs">P2: <strong className="text-white text-base">{scores.O}</strong></span>
             </div>
@@ -1582,7 +1574,7 @@ function countPoints(boardState, targetPlayer, rows, cols) {
         {/* SIDEBAR */}
         <div className="w-64 sm:w-72 bg-slate-900/90 border-r border-slate-800 p-4 flex flex-col gap-4 overflow-y-auto z-10 shrink-0 shadow-xl">
           {appMode === 'editor' && !isPlaytesting ? (
-            <div className="flex flex-col gap-4">
+            <div className="flex h-full flex-col gap-4">
               <div className="flex gap-1 border-b border-slate-800 pb-2">
                  <button onClick={()=>setEditorTab('tools')} className={`flex-1 text-[10px] font-bold py-1.5 rounded ${editorTab==='tools' ? 'bg-indigo-600 text-white':'text-slate-400 hover:bg-slate-800'}`}>TOOLS</button>
                  <button onClick={()=>setEditorTab('settings')} className={`flex-1 text-[10px] font-bold py-1.5 rounded ${editorTab==='settings' ? 'bg-indigo-600 text-white':'text-slate-400 hover:bg-slate-800'}`}>MAP</button>
@@ -1661,57 +1653,75 @@ function countPoints(boardState, targetPlayer, rows, cols) {
                 </>
               )}
 
-              {editorTab === 'settings' && (
-                <div className="flex flex-col gap-3">
-                  <div className="p-3 bg-slate-950 rounded border border-slate-800 flex flex-col gap-2">
-                    <label className="text-[10px] text-slate-500 font-bold uppercase">Dimensions</label>
-                    <div className="flex gap-2">
-                      <div className="flex-1">
-                        <span className="text-xs text-slate-400 mb-1 block">Width (X)</span>
-                        <input type="number" min="1" max="30" value={cols} onChange={(e) => {
-                          let v = parseInt(e.target.value) || 1;
-                          setCols(v); setBoard(createEmptyBoard(v, rows));
-                        }} className="w-full bg-slate-800 text-white p-1 rounded border border-slate-700 text-sm outline-none" />
-                      </div>
-                      <div className="flex-1">
-                        <span className="text-xs text-slate-400 mb-1 block">Height (Y)</span>
-                        <input type="number" min="1" max="30" value={rows} onChange={(e) => {
-                          let v = parseInt(e.target.value) || 1;
-                          setRows(v); setBoard(createEmptyBoard(cols, v));
-                        }} className="w-full bg-slate-800 text-white p-1 rounded border border-slate-700 text-sm outline-none" />
-                      </div>
-                    </div>
-                    <button onClick={() => setBoard(createEmptyBoard(cols, rows))} className="mt-2 w-full py-1.5 bg-rose-500/20 text-rose-400 rounded border border-rose-500/30 text-[10px] font-bold">CLEAR BOARD</button>
-                  </div>
-                  
-                  <div className="p-3 bg-slate-950 rounded border border-slate-800">
-                     <label className="text-[10px] text-slate-500 font-bold uppercase mb-2 block">Level Goal</label>
-                     <select value={currentGoal.type} onChange={(e) => setCurrentGoal({...currentGoal, type: e.target.value})} className="w-full bg-slate-800 text-white text-xs p-1.5 rounded mb-2 border border-slate-700 outline-none">
-                        <option value="standard">Standard (Highest Score)</option>
-                        <option value="exact_score">Exact Score</option>
-                        <option value="min_score">Minimum Score</option>
-                        <option value="max_score">Maximum Score</option>
-                        <option value="fill_targets">Fill Target Spaces</option>
-                        <option value="min_combo">Minimum Combo</option>
-                     </select>
-                     {currentGoal.type !== 'standard' && currentGoal.type !== 'fill_targets' && (
-                        <input type="number" value={currentGoal.target} onChange={(e) => setCurrentGoal({...currentGoal, target: Number(e.target.value)})} className="w-full bg-slate-800 text-white p-1.5 text-xs rounded border border-slate-700 outline-none" placeholder="Target Value" />
-                     )}
+ {editorTab === 'settings' && (
+                <div className="flex flex-col h-full gap-3">
+                  <div className="p-3 bg-slate-950 rounded border border-slate-800 flex flex-col gap-2">
+                    <label className="text-[10px] text-slate-500 font-bold uppercase">Dimensions</label>
+                    <div className="flex gap-2">
+                      <div className="flex-1">
+                        <span className="text-xs text-slate-400 mb-1 block">Width (X)</span>
+                        <input type="number" min="1" max="30" value={cols} onChange={(e) => {
+                          let v = parseInt(e.target.value) || 1;
+                          setCols(v); setBoard(createEmptyBoard(v, rows));
+                        }} className="w-full bg-slate-800 text-white p-1 rounded border border-slate-700 text-sm outline-none" />
+                      </div>
+                      <div className="flex-1">
+                        <span className="text-xs text-slate-400 mb-1 block">Height (Y)</span>
+                        <input type="number" min="1" max="30" value={rows} onChange={(e) => {
+                          let v = parseInt(e.target.value) || 1;
+                          setRows(v); setBoard(createEmptyBoard(cols, v));
+                        }} className="w-full bg-slate-800 text-white p-1 rounded border border-slate-700 text-sm outline-none" />
+                      </div>
+                    </div>
+                    <button onClick={() => setBoard(createEmptyBoard(cols, rows))} className="mt-2 w-full py-1.5 bg-rose-500/20 text-rose-400 rounded border border-rose-500/30 text-[10px] font-bold uppercase tracking-wider">Clear Board</button>
+                  </div>
+                  
+                  <div className="p-3 h-full bg-slate-950 rounded border border-slate-800 flex flex-col gap-2">
+                     <label className="text-[10px] text-slate-500 font-bold uppercase block">Level Goals</label>
+                     <div className="overflow-y-auto h-full space-y-2 pr-1 custom-scrollbar">
+                        {currentGoals.map((g, i) => (
+                           <div key={i} className="bg-slate-900 p-2 rounded border border-slate-700 relative flex flex-col gap-1.5">
+                              <div className="flex justify-between items-center gap-2">
+                                <select value={g.type} onChange={(e) => { let ng = [...currentGoals]; ng[i].type = e.target.value; setCurrentGoals(ng); }} className="flex-1 bg-slate-800 text-white text-[10px] p-1.5 rounded border border-slate-600 outline-none">
+                                   <option value="standard">Standard (vs AI)</option>
+                                   <option value="exact_score">Exact Score</option>
+                                   <option value="min_score">Minimum Score</option>
+                                   <option value="max_score">Maximum Score</option>
+                                   <option value="fill_targets">Fill Targets</option>
+                                   <option value="min_combo">Minimum Combo</option>
+                                   <option value="max_moves">Maximum Moves</option>
+                                   
+                                </select>
+                                <button onClick={() => setCurrentGoals(currentGoals.filter((_, idx)=>idx!==i))} className="text-rose-500 hover:text-rose-400 font-black px-2">X</button>
+                              </div>
+                              { g.type !== 'fill_targets' && g.type !== 'clear_all' && (
+                                 <div className="flex flex-col gap-1 w-full">
+                                   <input type="number" value={g.target} onChange={(e) => { let ng = [...currentGoals]; ng[i].target = Number(e.target.value); setCurrentGoals(ng); }} className="flex-1 bg-slate-800 text-white p-1.5 text-[10px] rounded border border-slate-600 outline-none" placeholder="Target Value" />
+                                   {g.type === 'max_moves' && (
+                                     <select value={g.mode || 'fail'} onChange={(e) => { let ng = [...currentGoals]; ng[i].mode = e.target.value; setCurrentGoals(ng); }} className="w-full bg-slate-800 text-white text-[10px] p-1.5 rounded border border-slate-600 outline-none">
+                                       <option value="fail">Fail on Limit</option>
+                                       <option value="end">Early End</option>
+                                     </select>
+                                   )}
+                              {g.type === 'standard' && (
+                                        <select value={aiBehavior} onChange={(e) => setAiBehavior(e.target.value)} className="w-full bg-slate-800 text-white text-[10px] p-1.5 rounded border border-slate-600 outline-none">
+                                             <option value="standard">Standard (Balanced)</option>
+                                             <option value="aggressive">Aggressive (Attack)</option>
+                                             <option value="defensive">Defensive (Stop Player)</option>
+                                         </select>
 
-                     {currentGoal.type === 'standard' && (
-                         <div className="mt-4 pt-3 border-t border-slate-800">
-                             <label className="text-[10px] text-indigo-400 font-bold uppercase mb-2 block">AI Behavior</label>
-                             <select value={aiBehavior} onChange={(e) => setAiBehavior(e.target.value)} className="w-full bg-slate-800 text-white text-xs p-1.5 rounded border border-indigo-900/50 outline-none">
-                                 <option value="standard">Standard (Dynamic)</option>
-                                 <option value="aggressive">Aggressive (Attack)</option>
-                                 <option value="defensive">Defensive (Stop Player)</option>
-                             </select>
-                             <p className="text-[9px] text-slate-500 mt-1 leading-tight">Controls the AI GOAP Engine evaluation priority for this level.</p>
-                         </div>
-                     )}
-                  </div>
-                </div>
-              )}
+                                   )}
+                                 </div>
+                              )}
+                           </div>
+                        ))}
+                     </div>
+                     <button onClick={() => setCurrentGoals([...currentGoals, {type:'standard', target:0}])} className="w-full py-1.5 bg-indigo-500/20 text-indigo-300 rounded text-[10px] font-bold border border-indigo-500/50 hover:bg-indigo-500/40 mt-1">
+                        + ADD GOAL
+                     </button>
+                  </div>
+                </div>
+              )}
 
               {editorTab === 'dialog' && (
                  <div className="flex flex-col gap-3">
@@ -1734,18 +1744,18 @@ function countPoints(boardState, targetPlayer, rows, cols) {
 
               {editorTab === 'campaign' && (
                 <div className="flex flex-col gap-3 flex-1 h-full">
-                  <div className="flex gap-2">
-                    <button onClick={() => setCampaign([...campaign, {name: `Level ${campaign.length + 1}`, cols, rows, board, dialogs, goal: currentGoal, aiBehavior}])} className="flex-1 py-2 bg-indigo-500/20 text-indigo-300 rounded text-[10px] font-bold border border-indigo-500/50 hover:bg-indigo-500/40">
-                      + APPEND BOARD TO CAMPAIGN
-                    </button>
-                    <button 
-                      onClick={() => {
-                        if (selectedLevelIndex >= 0 && selectedLevelIndex < campaign.length) {
-                          const newCampaign = [...campaign];
-                          newCampaign[selectedLevelIndex] = {name: campaign[selectedLevelIndex].name, cols, rows, board, dialogs, goal: currentGoal, aiBehavior};
-                          setCampaign(newCampaign);
-                        }
-                      }} 
+                  <div className="flex gap-2">
+                    <button onClick={() => setCampaign([...campaign, {name: `Level ${campaign.length + 1}`, cols, rows, board, dialogs, goals: currentGoals, aiBehavior}])} className="flex-1 py-2 bg-indigo-500/20 text-indigo-300 rounded text-[10px] font-bold border border-indigo-500/50 hover:bg-indigo-500/40">
+                      + APPEND BOARD TO CAMPAIGN
+                    </button>
+                    <button 
+                      onClick={() => {
+                        if (selectedLevelIndex >= 0 && selectedLevelIndex < campaign.length) {
+                          const newCampaign = [...campaign];
+                          newCampaign[selectedLevelIndex] = {name: campaign[selectedLevelIndex].name, cols, rows, board, dialogs, goals: currentGoals, aiBehavior};
+                          setCampaign(newCampaign);
+                        }
+                      }} 
                       disabled={selectedLevelIndex < 0}
                       className="flex-1 py-2 bg-emerald-500/20 text-emerald-400 rounded text-[10px] font-bold border border-emerald-500/50 hover:bg-emerald-500/40 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
@@ -1820,9 +1830,9 @@ function countPoints(boardState, targetPlayer, rows, cols) {
                      {campaign.length === 0 && <p className="text-[10px] text-slate-600 text-center py-4">Campaign Empty</p>}
                   </div>
 
-                  <div className="flex flex-col gap-2 mt-auto">
-                     <button onClick={() => downloadJSON(campaign, 'campaign.json')} disabled={!campaign.length} className="w-full py-1.5 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded text-[10px] font-bold disabled:opacity-50">EXPORT CAMPAIGN (.JSON)</button>
-                     <button onClick={() => downloadJSON({cols, rows, board, dialogs, goal: currentGoal, aiBehavior}, 'level.json')} className="w-full py-1.5 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded text-[10px] font-bold">EXPORT LEVEL (.JSON)</button>
+                  <div className="flex flex-col gap-2 mt-auto">
+                     <button onClick={() => downloadJSON(campaign, 'campaign.json')} disabled={!campaign.length} className="w-full py-1.5 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded text-[10px] font-bold disabled:opacity-50">EXPORT CAMPAIGN (.JSON)</button>
+                     <button onClick={() => downloadJSON({cols, rows, board, dialogs, goals: currentGoals, aiBehavior}, 'level.json')} className="w-full py-1.5 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded text-[10px] font-bold">EXPORT LEVEL (.JSON)</button>
                      
                      <label className="w-full py-1.5 bg-slate-800 text-slate-300 border border-slate-700 rounded text-[10px] font-bold cursor-pointer text-center block hover:bg-slate-700">
                         IMPORT LEVEL / CAMPAIGN
@@ -1893,17 +1903,28 @@ function countPoints(boardState, targetPlayer, rows, cols) {
                      )}
                    </div>
 
-                   <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 flex flex-col gap-2">
-                      <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Active Goal</p>
-                      <p className="text-sm font-bold text-indigo-300">
-                         {currentGoal.type === 'standard' && 'Score the most lines to win!'}
-                         {currentGoal.type === 'exact_score' && `Get exactly ${currentGoal.target} points.`}
-                         {currentGoal.type === 'min_score' && `Get at least ${currentGoal.target} points.`}
-                         {currentGoal.type === 'max_score' && `Stay under ${currentGoal.target} points.`}
-                         {currentGoal.type === 'fill_targets' && 'Place pieces on all Target zones.'}
-                         {currentGoal.type === 'min_combo' && `Score an extra-turn combo of ${currentGoal.target}.`}
-                      </p>
-                   </div>
+                   <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 flex flex-col gap-2">
+                      <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest flex justify-between">
+                        <span>Active Goals</span>
+                        {currentGoals.some(g => g.type === 'max_moves') && <span className="text-rose-400">Moves: {movesMade}/{currentGoals.find(g => g.type === 'max_moves').target}</span>}
+                      </p>
+                      <div className="text-sm font-bold text-indigo-300 flex flex-col gap-1">
+                         {currentGoals.map((g, i) => (
+                           <div key={i} className="flex items-center gap-2">
+                             <span className="w-1.5 h-1.5 rounded-full bg-indigo-500"></span>
+                             <span>
+                               {g.type === 'standard' && 'Score the most lines against AI.'}
+                               {g.type === 'exact_score' && `Get exactly ${g.target} points.`}
+                               {g.type === 'min_score' && `Get at least ${g.target} points.`}
+                               {g.type === 'max_score' && `Stay under ${g.target} points.`}
+                               {g.type === 'fill_targets' && 'Fill all Target spaces.'}
+                               {g.type === 'min_combo' && `Combo of ${g.target} (${Math.max(maxComboAchieved, 0)}/${g.target}).`}
+                               {g.type === 'max_moves' && (!g.mode || g.mode === 'fail' ? `Win in ${g.target} moves or less.` : `Game ends after ${g.target} moves.`)}
+                             </span>
+                           </div>
+                         ))}
+                      </div>
+                   </div>
 
                    <div className="text-[10px] sm:text-xs text-slate-400 space-y-2 bg-slate-950 p-4 rounded-xl border border-slate-800 mt-auto">
                      <p><strong className="text-white text-[10px] uppercase block mb-0.5">Navigation</strong>Space+Drag, Middle-Click, or Arrow Keys to Pan. Scroll to Zoom.</p>
@@ -2071,4 +2092,3 @@ function countPoints(boardState, targetPlayer, rows, cols) {
     </div>
   );
 }
-
