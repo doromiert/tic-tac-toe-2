@@ -164,6 +164,7 @@ export default function App() {
     const [unlockedLevels, setUnlockedLevels] = useState([0]); // Always unlock first level by default
   // App Navigation State
   const [appMode, setAppMode] = useState('title'); // title, local_setup, local, solo_setup, solo, campaign_select, campaign, editor
+  const [gameMode, setGameMode] = useState('standard'); // standard, zone_control, corruption, turf_wars
   const [isPlaytesting, setIsPlaytesting] = useState(false);
   const [backupState, setBackupState] = useState(null);
   
@@ -198,6 +199,81 @@ export default function App() {
       setShowDialog(false);
       setDialogIndex(dialogs.length);
   };
+
+  // --- GAMEPLAY EXPANSIONS LOGIC ---
+  useEffect(() => {
+    if (movesMade === 0 || gameOver) return;
+    
+    let nextBoard = JSON.parse(JSON.stringify(board));
+    let boardChanged = false;
+
+    // 1. Zone Control: Reset targets every 5 rounds (10 moves)
+    if (gameMode === 'zone_control' && movesMade % 10 === 0) {
+      let isFull = nextBoard.every(r => r.every(c => c.piece || c.type === 'void'));
+      if (!isFull) {
+        let zoneLineIds = new Set();
+        nextBoard.forEach(row => row.forEach(cell => {
+          if (cell.isTarget && cell.lineId) {
+            zoneLineIds.add(cell.lineId);
+          }
+        }));
+
+        nextBoard.forEach(row => row.forEach(cell => {
+          if (cell.isTarget) {
+            if (cell.piece) {
+              cell.piece = null;
+              cell.dead = false;
+              cell.lineId = null;
+              boardChanged = true;
+            }
+          } else if (cell.lineId && zoneLineIds.has(cell.lineId)) {
+            cell.dead = false;
+            cell.lineId = null;
+            boardChanged = true;
+          }
+        }));
+
+        if (boardChanged) {
+          setDrawnLines(prev => prev.filter(line => !zoneLineIds.has(line.id)));
+        }
+      }
+    }
+
+    // 2. The Corruption: Void spread at turn end
+    if (gameMode === 'corruption') {
+      let validSpaces = [];
+      nextBoard.forEach((row, y) => row.forEach((cell, x) => {
+        const bl = ['dup', 'zap', 'mov', 'rot_cw', 'rot_ccw', 'zapspace', 'target', 'void', 'locked_mech', 'locked_letter'];
+        if (!bl.includes(cell.type)) validSpaces.push({x, y});
+      }));
+      
+      if (validSpaces.length > 0) {
+        let rand = validSpaces[Math.floor(Math.random() * validSpaces.length)];
+        nextBoard[rand.y][rand.x].type = 'void';
+        nextBoard[rand.y][rand.x].piece = null;
+        boardChanged = true;
+      }
+    }
+
+    if (boardChanged) setBoard(nextBoard);
+  }, [movesMade, gameMode, gameOver]);
+
+  // 3. Turf Wars: Area Control Continuous Tally
+  useEffect(() => {
+    if (gameMode === 'turf_wars') {
+      let xScore = 0;
+      let oScore = 0;
+      board.flat().forEach(cell => {
+        if (cell.piece === 'X') xScore++;
+        if (cell.piece === 'O') oScore++;
+      });
+      setScores({ X: xScore, O: oScore });
+      
+      if (gameOver) {
+        setWinMessage(xScore > oScore ? 'X Wins Turf War!' : oScore > xScore ? 'O Wins Turf War!' : 'Turf War Tie!');
+      }
+    }
+  }, [board, gameMode, gameOver]);
 
   // Editor State
   const [editorTab, setEditorTab] = useState('tools'); 
@@ -686,7 +762,16 @@ export default function App() {
 
     linesFound.forEach(line => {
       const lId = generateId();
-      tempScores[line.player]++;
+      
+      let lineScore = 1;
+      if (gameMode === 'zone_control') {
+          lineScore = 0;
+          line.seq.forEach(item => {
+              if (b[item.y][item.x].isTarget) lineScore++;
+          });
+      }
+      
+      tempScores[line.player] += lineScore;
       
       if (line.player === currentPlayer) {
           pointsScoredThisTurn++;
@@ -888,6 +973,9 @@ export default function App() {
 
   // --- DATA MANAGEMENT ---
   const loadLevel = (levelData) => {
+    setGameMode(levelData.gameMode || 'standard');
+    console.log("Loading level with data:", levelData);
+    console.log(gameMode)
     setCols(levelData.cols || levelData.gridSize || 9);
     setRows(levelData.rows || levelData.gridSize || 9);
     setBoard(JSON.parse(JSON.stringify(levelData.board))); 
@@ -1008,6 +1096,7 @@ export default function App() {
                <label className="w-full py-3 bg-slate-800 text-slate-300 rounded font-bold cursor-pointer text-center block hover:bg-slate-700 border border-slate-700">
                  IMPORT LEVEL JSON
                  <input type="file" accept=".json" className="hidden" onChange={(e) => handleLevelImport(e, (d) => {
+                    setGameMode(d.gameMode || 'standard');
                      setCols(d.cols || d.gridSize || 9);
                      setRows(d.rows || d.gridSize || 9);
                      setBoard(JSON.parse(JSON.stringify(d.board)));
@@ -1653,10 +1742,24 @@ function countPoints(boardState, targetPlayer, rows, cols) {
                 </>
               )}
 
- {editorTab === 'settings' && (
-                <div className="flex flex-col h-full gap-3">
-                  <div className="p-3 bg-slate-950 rounded border border-slate-800 flex flex-col gap-2">
-                    <label className="text-[10px] text-slate-500 font-bold uppercase">Dimensions</label>
+{editorTab === 'settings' && (
+                <div className="flex flex-col h-full gap-3">
+                  <div className="p-3 bg-slate-950 rounded border border-slate-800 flex flex-col gap-2">
+                    <label className="text-[10px] text-slate-500 font-bold uppercase">Game Mode</label>
+                    <select 
+                      value={gameMode} 
+                      onChange={(e) => setGameMode(e.target.value)} 
+                      className="w-full bg-slate-800 text-white p-1.5 rounded border border-slate-700 text-xs outline-none"
+                    >
+                      <option value="standard">Standard</option>
+                      <option value="zone_control">Zone Control</option>
+                      <option value="corruption">The Corruption</option>
+                      <option value="turf_wars">Turf Wars</option>
+                    </select>
+                  </div>
+
+                  <div className="p-3 bg-slate-950 rounded border border-slate-800 flex flex-col gap-2">
+                    <label className="text-[10px] text-slate-500 font-bold uppercase">Dimensions</label>
                     <div className="flex gap-2">
                       <div className="flex-1">
                         <span className="text-xs text-slate-400 mb-1 block">Width (X)</span>
@@ -1745,14 +1848,14 @@ function countPoints(boardState, targetPlayer, rows, cols) {
               {editorTab === 'campaign' && (
                 <div className="flex flex-col gap-3 flex-1 h-full">
                   <div className="flex gap-2">
-                    <button onClick={() => setCampaign([...campaign, {name: `Level ${campaign.length + 1}`, cols, rows, board, dialogs, goals: currentGoals, aiBehavior}])} className="flex-1 py-2 bg-indigo-500/20 text-indigo-300 rounded text-[10px] font-bold border border-indigo-500/50 hover:bg-indigo-500/40">
+                    <button onClick={() => setCampaign([...campaign, {name: `Level ${campaign.length + 1}`, gameMode, cols, rows, board, dialogs, goals: currentGoals, aiBehavior}])} className="flex-1 py-2 bg-indigo-500/20 text-indigo-300 rounded text-[10px] font-bold border border-indigo-500/50 hover:bg-indigo-500/40">
                       + APPEND BOARD TO CAMPAIGN
                     </button>
                     <button 
                       onClick={() => {
                         if (selectedLevelIndex >= 0 && selectedLevelIndex < campaign.length) {
                           const newCampaign = [...campaign];
-                          newCampaign[selectedLevelIndex] = {name: campaign[selectedLevelIndex].name, cols, rows, board, dialogs, goals: currentGoals, aiBehavior};
+                          newCampaign[selectedLevelIndex] = {name: campaign[selectedLevelIndex].name, gameMode, cols, rows, board, dialogs, goals: currentGoals, aiBehavior};
                           setCampaign(newCampaign);
                         }
                       }} 
@@ -1832,7 +1935,7 @@ function countPoints(boardState, targetPlayer, rows, cols) {
 
                   <div className="flex flex-col gap-2 mt-auto">
                      <button onClick={() => downloadJSON(campaign, 'campaign.json')} disabled={!campaign.length} className="w-full py-1.5 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded text-[10px] font-bold disabled:opacity-50">EXPORT CAMPAIGN (.JSON)</button>
-                     <button onClick={() => downloadJSON({cols, rows, board, dialogs, goals: currentGoals, aiBehavior}, 'level.json')} className="w-full py-1.5 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded text-[10px] font-bold">EXPORT LEVEL (.JSON)</button>
+                     <button onClick={() => downloadJSON({gameMode, cols, rows, board, dialogs, goals: currentGoals, aiBehavior}, 'level.json')} className="w-full py-1.5 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded text-[10px] font-bold">EXPORT LEVEL (.JSON)</button>
                      
                      <label className="w-full py-1.5 bg-slate-800 text-slate-300 border border-slate-700 rounded text-[10px] font-bold cursor-pointer text-center block hover:bg-slate-700">
                         IMPORT LEVEL / CAMPAIGN
@@ -2092,3 +2195,6 @@ function countPoints(boardState, targetPlayer, rows, cols) {
     </div>
   );
 }
+
+
+
