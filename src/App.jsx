@@ -647,6 +647,16 @@ export default function App() {
         let cell = b[cy][cx];
         if (cell.type === 'locked_letter' && !cell.unlocked) continue;
         if (cell.type === 'dup' || cell.type === 'zapspace' || cell.type === 'void') continue;
+        const checkDup = (dx, dy, targetDir, pushX, pushY) => {
+          let neighbor = b[cy + dy]?.[cx + dx];
+          if (neighbor?.type === 'dup' && neighbor.dir === targetDir) {
+            queue.push({ x: cx + pushX, y: cy + pushY, piece, overwrite: true });
+          }
+        };
+        checkDup(1, 0, 'r', 2, 0);   
+        checkDup(-1, 0, 'l', -2, 0);
+        checkDup(0, 1, 'd', 0, 2);
+        checkDup(0, -1, 'u', 0, -2);
         if (cell.piece && !overwrite) continue;
 
         if (cell.piece && cell.dead && overwrite && cell.lineId) {
@@ -665,16 +675,7 @@ export default function App() {
           }));
         }
 
-        const checkDup = (dx, dy, targetDir, pushX, pushY) => {
-          let neighbor = b[cy + dy]?.[cx + dx];
-          if (neighbor?.type === 'dup' && neighbor.dir === targetDir) {
-            queue.push({ x: cx + pushX, y: cy + pushY, piece, overwrite: true });
-          }
-        };
-        checkDup(1, 0, 'r', 2, 0);   
-        checkDup(-1, 0, 'l', -2, 0);
-        checkDup(0, 1, 'd', 0, 2);
-        checkDup(0, -1, 'u', 0, -2);
+        
       }
     };
 
