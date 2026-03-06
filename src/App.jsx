@@ -1000,7 +1000,8 @@ export default function App() {
   };
 
   const handleCellInteract = (x, y, e) => {
-    if (isDragging.current || isSpaceHeld) return; // Prevent painting while panning
+    if (isDragging.current) return; // Prevent painting while panning
+    if (e.type === 'pointerdown' && e.button !== 0) return; // Only left-click
     if (e.type === 'pointerenter' && (e.buttons !== 1 || !isBuildMode)) return; 
     if (gameOver && !isBuildMode) return;
     
