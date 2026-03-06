@@ -667,6 +667,7 @@ export default function App() {
   const [draggedIndex, setDraggedIndex] = useState(-1);
   const [renamingIndex, setRenamingIndex] = useState(-1);
   const [aiDiff, setAiDiff] = useState("hard");
+  const [playtestMode, setPlaytestMode] = useState("standard");
 
   const handleDragStart = (e, index) => {
     setDraggedIndex(index);
@@ -677,7 +678,8 @@ export default function App() {
     const isBotActive =
       appMode === "solo" ||
       (appMode === "campaign" &&
-        currentGoals.some((g) => g.type === "standard"));
+        currentGoals.some((g) => g.type === "standard")) ||
+      (isPlaytesting && playtestMode === "standard");
 
     if (isBotActive && currentPlayer === "O" && !gameOver) {
       const timer = setTimeout(() => {
@@ -1527,7 +1529,7 @@ export default function App() {
     }
     setMaxComboAchieved(currentMaxCombo);
 
-    if (appMode === "local" || isPlaytesting) {
+    if (appMode === "local" || (isPlaytesting && playtestMode === "manual")) {
       if (isFull) {
         matchOver = true;
         wMsg =
@@ -1537,7 +1539,11 @@ export default function App() {
               ? "Player O Wins!"
               : "Tie!";
       }
-    } else if (appMode === "solo" || appMode === "campaign") {
+    } else if (
+      appMode === "solo" ||
+      appMode === "campaign" ||
+      (isPlaytesting && playtestMode === "standard")
+    ) {
       let failState = false;
       let allMet = true;
       let anyFailed = false;
@@ -2013,10 +2019,6 @@ export default function App() {
     );
   }
 
-  /**
-   * Procedural AI Evaluator (V2)
-   * Features GOAP JSON integration, difficulty scaling, and behavioral stances.
-   */
   const getProceduralMove = (
     board,
     aiPiece,
@@ -2048,15 +2050,12 @@ export default function App() {
     }
 
     if (validMoves.length === 0) return null;
-
-    // Pulse Blitz hesitation mechanic
     if (gameMode === "pulse_blitz" && Math.random() < 0.2) return null;
 
     let bestMove = null;
     let highestUtility = -Infinity;
     const opponentPiece = aiPiece === "X" ? "O" : "X";
 
-    // --- NEW: Gravity Prediction for Cascade ---
     const getGravityY = (startX, startY) => {
       let finalY = startY;
       const blockingTypes = [
@@ -2068,13 +2067,10 @@ export default function App() {
         "dup",
         "zapspace",
       ];
-
       while (finalY + 1 < rows) {
         let current = board[finalY][startX];
         let below = board[finalY + 1][startX];
-
         if (current.walls?.b) break;
-
         if (
           !below.piece &&
           !below.mechanicalLock &&
@@ -2092,16 +2088,14 @@ export default function App() {
       let utility = 0;
       let evaluatedPositions = [];
 
-      // Determine final Y if gravity is active
       let actualY =
         gameMode === "cascade" ? getGravityY(move.x, move.y) : move.y;
       evaluatedPositions.push({ x: move.x, y: actualY });
 
-      // --- NEW: Mirror Prediction ---
       if (gameMode === "mirror_protocol") {
         let mx = cols - 1 - move.x;
         if (mx >= 0 && mx < cols && mx !== move.x) {
-          let mCell = board[move.y][mx]; // Check origin block
+          let mCell = board[move.y][mx];
           if (
             !mCell.piece &&
             !mCell.mechanicalLock &&
@@ -2116,39 +2110,140 @@ export default function App() {
         }
       }
 
-      // --- TACTICAL EVALUATION ---
-      // Evaluate the utility of the resulting placement(s)
+      // --- NEW: Predictive Chain Engine (The Menace Protocol) ---
+      let finalPositions = [];
+
       evaluatedPositions.forEach((pos) => {
-        const { x, y } = pos;
+        let { x, y } = pos;
+        let cell = board[y][x];
+
+        // 1. Trace Zap Logic
+        if (cell.type === "zap") {
+          let cx = x,
+            cy = y;
+          while (true) {
+            let dir = board[cy][cx].dir;
+            let nx = cx + (dir === "r" ? 1 : dir === "l" ? -1 : 0);
+            let ny = cy + (dir === "d" ? 1 : dir === "u" ? -1 : 0);
+            if (ny < 0 || ny >= rows || nx < 0 || nx >= cols) break;
+            if (board[ny][nx].type === "void") break;
+
+            let blocked = false;
+            if (dir === "r" && board[cy][cx].walls.r) blocked = true;
+            if (dir === "l" && board[ny][nx].walls.r) blocked = true;
+            if (dir === "d" && board[cy][cx].walls.b) blocked = true;
+            if (dir === "u" && board[ny][nx].walls.b) blocked = true;
+
+            let nextCell = board[ny][nx];
+            if (
+              blocked ||
+              (nextCell.type === "locked_letter" && !nextCell.unlocked)
+            )
+              break;
+            if (nextCell.piece) {
+              cx = nx;
+              cy = ny;
+              break;
+            }
+
+            cx = nx;
+            cy = ny;
+            if (nextCell.type !== "zap") break;
+          }
+          finalPositions.push({ x: cx, y: cy, isOverwrite: true });
+        }
+        // 2. Trace Mov Logic
+        else if (cell.type === "mov") {
+          let cx = x,
+            cy = y;
+          let iters = 0;
+          while (board[cy][cx].type === "mov" && iters < 10) {
+            iters++;
+            let c = board[cy][cx];
+            let nx = cx + (c.dir === "r" ? 1 : c.dir === "l" ? -1 : 0);
+            let ny = cy + (c.dir === "d" ? 1 : c.dir === "u" ? -1 : 0);
+            let blocked = false;
+            if (c.dir === "r" && c.walls.r) blocked = true;
+            if (c.dir === "l" && nx >= 0 && board[ny][nx].walls.r)
+              blocked = true;
+            if (c.dir === "d" && c.walls.b) blocked = true;
+            if (c.dir === "u" && ny >= 0 && board[ny][nx].walls.b)
+              blocked = true;
+
+            if (
+              blocked ||
+              nx < 0 ||
+              nx >= cols ||
+              ny < 0 ||
+              ny >= rows ||
+              board[ny][nx].type === "void"
+            )
+              break;
+            cx = nx;
+            cy = ny;
+          }
+          finalPositions.push({ x: cx, y: cy, isOverwrite: false });
+        } else {
+          finalPositions.push({ x, y, isOverwrite: false });
+        }
+
+        // 3. Trace Dup Logic
+        const checkDup = (dx, dy, targetDir, pushX, pushY) => {
+          let neighbor = board[y + dy]?.[x + dx];
+          if (neighbor?.type === "dup" && neighbor.dir === targetDir) {
+            let px = x + pushX,
+              py = y + pushY;
+            if (
+              px >= 0 &&
+              px < cols &&
+              py >= 0 &&
+              py < rows &&
+              board[py][px].type !== "void"
+            ) {
+              finalPositions.push({ x: px, y: py, isOverwrite: true });
+            }
+          }
+        };
+        checkDup(1, 0, "r", 2, 0);
+        checkDup(-1, 0, "l", -2, 0);
+        checkDup(0, 1, "d", 0, 2);
+        checkDup(0, -1, "u", 0, -2);
+      });
+
+      // --- TACTICAL EVALUATION ---
+      finalPositions.forEach((pos) => {
+        const { x, y, isOverwrite } = pos;
         const targetCell = board[y][x];
 
-        // Determine what the piece will actually become when it lands here
         let actualPiece = aiPiece;
         if (targetCell.type === "flip" || targetCell.flipMod)
           actualPiece = opponentPiece;
         else if (targetCell.type === "trash") actualPiece = null;
 
-        // 1. Positional / Center Control
+        // MENACE LOGIC: Weaponize overwrites
+        if (isOverwrite) {
+          if (targetCell.piece === opponentPiece)
+            utility += 800; // Assassinate opponent
+          else if (targetCell.piece === aiPiece) utility -= 500; // Avoid suicide
+        }
+
         const centerDistX = Math.abs(x - Math.floor(cols / 2));
         const centerDistY = Math.abs(y - Math.floor(rows / 2));
         utility += (cols - centerDistX) * 2;
         utility += (rows - centerDistY) * 2;
 
-        // 2. Tile Interactions
-        if (["zap", "mov", "rot_cw", "rot_ccw"].includes(targetCell.type))
-          utility += 15;
+        if (["rot_cw", "rot_ccw"].includes(targetCell.type)) utility += 15;
 
         if (targetCell.isTarget) {
           if (actualPiece === aiPiece) utility += 50;
-          else if (actualPiece === opponentPiece) utility -= 50; // Heavily penalize giving targets to the opponent
+          else if (actualPiece === opponentPiece) utility -= 50;
         }
 
         if (actualPiece === null) {
-          utility -= 50; // Dropping a piece in the trash is generally awful
-          return; // Skip line checks because the piece no longer exists
+          utility -= 50;
+          return;
         }
 
-        // 3. Line Checks (Win/Block Logic)
         const checkLinePotential = (pieceToCheck) => {
           let score = 0;
           const dirs = [
@@ -2158,10 +2253,9 @@ export default function App() {
             [1, -1],
           ];
           dirs.forEach(([dx, dy]) => {
-            let count = 1; // Start with the hypothetical piece
+            let count = 1;
             let openEnds = 0;
 
-            // Forward check
             let cx = x + dx,
               cy = y + dy;
             while (cx >= 0 && cx < cols && cy >= 0 && cy < rows) {
@@ -2174,7 +2268,6 @@ export default function App() {
               cy += dy;
             }
 
-            // Backward check
             cx = x - dx;
             cy = y - dy;
             while (cx >= 0 && cx < cols && cy >= 0 && cy < rows) {
@@ -2187,14 +2280,12 @@ export default function App() {
               cy -= dy;
             }
 
-            if (count >= 3)
-              score += 10000; // Immediate win/block priority
-            else if (count === 2 && openEnds > 0) score += 50; // Setup
+            if (count >= 3) score += 10000;
+            else if (count === 2 && openEnds > 0) score += 50;
           });
           return score;
         };
 
-        // Apply weighting based on the ACTUAL piece that lands there
         if (actualPiece === aiPiece) {
           utility +=
             checkLinePotential(aiPiece) *
@@ -2203,20 +2294,18 @@ export default function App() {
             checkLinePotential(opponentPiece) *
             (aiBehavior === "defensive" ? 1.5 : 1.2);
         } else if (actualPiece === opponentPiece) {
-          // If the piece flips, we are placing a piece for the opponent! Penalize heavily if it builds their line.
           utility -= checkLinePotential(opponentPiece) * 2;
-          utility -= 100; // Flat penalty for giving them a free piece
+          utility -= 100;
         }
       });
 
-      // 4. Difficulty Modifiers (Randomness)
       if (difficulty === "drunk") utility += Math.random() * 1000;
       else if (difficulty === "easy") utility += Math.random() * 200;
       else if (difficulty === "normal") utility += Math.random() * 40;
 
       if (utility > highestUtility) {
         highestUtility = utility;
-        bestMove = move; // Always return the selection coords, game handles physics
+        bestMove = move;
       }
     });
 
@@ -2530,27 +2619,52 @@ export default function App() {
 
               {editorTab === "tools" && (
                 <>
-                  <button
-                    onClick={() => {
-                      setBackupState({
-                        board: JSON.parse(JSON.stringify(board)),
-                        scores: { ...scores },
-                        drawnLines: [...drawnLines],
-                        extraTurns,
-                        currentPlayer,
-                        gameOver,
-                      });
-                      setScores({ X: 0, O: 0 });
-                      setDrawnLines([]);
-                      setExtraTurns(0);
-                      setCurrentPlayer("X");
-                      setGameOver(false);
-                      setIsPlaytesting(true);
-                    }}
-                    className="w-full py-2 bg-emerald-500/20 text-emerald-400 border border-emerald-500/50 hover:bg-emerald-500/30 font-bold rounded text-xs tracking-wider mb-2"
-                  >
-                    ▶ TEST LEVEL
-                  </button>
+                  <div className="grid grid-cols-2 gap-1.5 mb-2">
+                    <button
+                      onClick={() => {
+                        setBackupState({
+                          board: JSON.parse(JSON.stringify(board)),
+                          scores: { ...scores },
+                          drawnLines: [...drawnLines],
+                          extraTurns,
+                          currentPlayer,
+                          gameOver,
+                        });
+                        setScores({ X: 0, O: 0 });
+                        setDrawnLines([]);
+                        setExtraTurns(0);
+                        setCurrentPlayer("X");
+                        setGameOver(false);
+                        setIsPlaytesting(true);
+                        setPlaytestMode("standard");
+                      }}
+                      className="w-full py-2 bg-emerald-500/20 text-emerald-400 border border-emerald-500/50 hover:bg-emerald-500/30 font-bold rounded text-xs tracking-wider"
+                    >
+                      ▶ TEST SOLO
+                    </button>
+                    <button
+                      onClick={() => {
+                        setBackupState({
+                          board: JSON.parse(JSON.stringify(board)),
+                          scores: { ...scores },
+                          drawnLines: [...drawnLines],
+                          extraTurns,
+                          currentPlayer,
+                          gameOver,
+                        });
+                        setScores({ X: 0, O: 0 });
+                        setDrawnLines([]);
+                        setExtraTurns(0);
+                        setCurrentPlayer("X");
+                        setGameOver(false);
+                        setIsPlaytesting(true);
+                        setPlaytestMode("manual");
+                      }}
+                      className="w-full py-2 bg-blue-500/20 text-blue-400 border border-blue-500/50 hover:bg-blue-500/30 font-bold rounded text-xs tracking-wider"
+                    >
+                      ▶ TEST P1VP2
+                    </button>
+                  </div>
 
                   <div className="grid grid-cols-3 gap-1.5">
                     {["empty", "void", "wall"].map((t) => (
