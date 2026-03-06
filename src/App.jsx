@@ -1708,6 +1708,9 @@ export default function App() {
         if (editorTool === "empty" || editorTool === "void") {
           b[y][x].piece = null;
           b[y][x].mechanicalLock = false;
+          b[y][x].flipMod = false;
+          b[y][x].isTarget = false;
+          b[y][x].walls = { r: false, b: false, bl: false, br: false };
         }
       }
       setBoard(b);
