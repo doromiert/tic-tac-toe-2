@@ -731,7 +731,7 @@ export default function App() {
     fetch("./default.json")
       .then((res) => res.json())
       .then((data) => setCampaign(data))
-      .catch(() => setCampaign({}));
+      .catch(() => setCampaign([]));
     setUnlockedLevels([0]);
   }, []);
 
