@@ -28,122 +28,6 @@ export const db = getFirestore(app);
 const DEFAULT_COLS = 9;
 const DEFAULT_ROWS = 9;
 const MAX_ITERATIONS = 200;
-
-// --- ICON COMPONENTS (Unselectable) ---
-const IconZapspace = ({ dead }) => (
-  <svg
-    viewBox="0 0 24 24"
-    className={`w-full h-full transition-all pointer-events-none select-none ${dead ? "text-green-900/20 grayscale" : "text-green-500/40"}`}
-    stroke="currentColor"
-    strokeWidth="2.5"
-  >
-    <line x1="4" y1="20" x2="20" y2="4" />
-    <line x1="12" y1="24" x2="24" y2="12" />
-    <line x1="0" y1="12" x2="12" y2="0" />
-  </svg>
-);
-
-const IconDup = ({ dir }) => {
-  const rots = { r: 0, d: 90, l: 180, u: -90 };
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      className="w-2/3 h-2/3 text-indigo-400/70 pointer-events-none select-none"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="3"
-      style={{ transform: `rotate(${rots[dir]}deg)` }}
-    >
-      <polyline points="9 18 15 12 9 6" />
-    </svg>
-  );
-};
-const IconZap = ({ dir }) => {
-  const rots = { r: 0, d: 90, l: 180, u: -90 };
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      className="w-2/3 h-2/3 text-yellow-400/70 pointer-events-none select-none"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="3"
-      style={{ transform: `rotate(${rots[dir]}deg)` }}
-    >
-      <polyline points="13 17 18 12 13 7" />
-      <polyline points="6 17 11 12 6 7" />
-    </svg>
-  );
-};
-const IconMov = ({ dir }) => {
-  const rots = { r: 0, d: 90, l: 180, u: -90 };
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      className="w-2/3 h-2/3 text-blue-400/70 pointer-events-none select-none"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="3"
-      style={{ transform: `rotate(${rots[dir]}deg)` }}
-    >
-      <line x1="5" y1="12" x2="19" y2="12" />
-      <polyline points="12 5 19 12 12 19" />
-    </svg>
-  );
-};
-const IconRot = ({ cw }) => (
-  <svg
-    viewBox="0 0 24 24"
-    className="w-2/3 h-2/3 text-purple-400/70 pointer-events-none select-none"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="3"
-    style={{ transform: cw ? "scaleX(1)" : "scaleX(-1)" }}
-  >
-    <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
-    <polyline points="21 3 21 8 16 8" />
-  </svg>
-);
-const IconFlip = () => (
-  <svg
-    viewBox="0 0 24 24"
-    className="w-2/3 h-2/3 text-pink-400/70 pointer-events-none select-none"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="3"
-  >
-    <polyline points="17 1 21 5 17 9" />
-    <path d="M3 11V9a4 4 0 0 1 4-4h14" />
-    <polyline points="7 23 3 19 7 15" />
-    <path d="M21 13v2a4 4 0 0 1-4 4H3" />
-  </svg>
-);
-const IconLockedMech = () => (
-  <svg
-    viewBox="0 0 32 32"
-    className="w-2/3 h-2/3 text-slate-500/70 pointer-events-none select-none"
-    fill="currentColor"
-  >
-    <circle cx="6" cy="6" r="2.5" />
-    <circle cx="26" cy="6" r="2.5" />
-    <circle cx="6" cy="26" r="2.5" />
-    <circle cx="26" cy="26" r="2.5" />
-  </svg>
-);
-const IconTrash = () => (
-  <svg
-    viewBox="0 0 24 24"
-    className="w-2/3 h-2/3 text-rose-500/70 pointer-events-none select-none"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2.5"
-  >
-    <polyline points="3 6 5 6 21 6" />
-    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-    <line x1="10" y1="11" x2="10" y2="17" />
-    <line x1="14" y1="11" x2="14" y2="17" />
-  </svg>
-);
-
 // --- UTILS ---
 const generateId = () => Math.random().toString(36).substr(2, 9);
 const downloadJSON = (data, filename) => {
@@ -325,7 +209,7 @@ export default function App() {
         );
 
         // Reset game state for the match
-        setScores({ X: 0, O: 0 });
+        setScores({ X: 0, O: 0, T: 0, S: 0 });
         setGameOver(false);
         setAppMode("local"); // Or a new 'multiplayer' mode if you prefer
       }
@@ -345,7 +229,7 @@ export default function App() {
           }),
         );
         // Also reset local game state
-        setScores({ X: 0, O: 0 });
+        setScores({ X: 0, O: 0, T: 0, S: 0 });
         setDrawnLines([]);
         setGameOver(false);
       }
@@ -363,7 +247,7 @@ export default function App() {
         setAiBehavior(data.aiBehavior || "standard");
 
         // Reset Joiner's local scores/state
-        setScores({ X: 0, O: 0 });
+        setScores({ X: 0, O: 0, T: 0, S: 0 });
         setGameOver(false);
         setAppMode("local");
       } else if (data.type === "MOVE") {
@@ -475,9 +359,55 @@ export default function App() {
     createEmptyBoard(DEFAULT_COLS, DEFAULT_ROWS),
   );
 
+  // UI Config
+  const [iconSizes, setIconSizes] = useState({
+    X: 40,
+    O: 40,
+    T: 40,
+    S: 40,
+    neutral: 32,
+    trash: 32,
+    flip: 32,
+    dup: 32,
+    locked_mech: 32,
+    locked_letter: 32,
+    switch: 32,
+    rot_cw: 32,
+    rot_ccw: 32,
+    mov: 42,
+    zap: 42,
+  });
+
+  const getCellBgIcon = (cell) => {
+    switch (cell.type) {
+      case "neutral":
+        return "Neutral";
+      case "trash":
+        return "Trash";
+      case "dup":
+        return "Duplicator";
+      case "rot_cw":
+      case "rot_ccw":
+        return "Rotate";
+      case "locked_letter":
+        return `Letterlock ${"DCBA".indexOf(cell.letter) + 1}`;
+      case "switch":
+        return `Switch ${"DCBA".indexOf(cell.letter) + 1}`;
+      case "mov":
+        return "Mover";
+      case "zap":
+        return "Zap";
+      default:
+        if (cell.flipMod || cell.type === "flip") return "Flip";
+        if (cell.mechanicalLock) return "Lock";
+        return null;
+    }
+  };
+
   // Game State
+  const [activePlayers, setActivePlayers] = useState(["X", "O"]);
   const [currentPlayer, setCurrentPlayer] = useState("X");
-  const [scores, setScores] = useState({ X: 0, O: 0 });
+  const [scores, setScores] = useState({ X: 0, O: 0, T: 0, S: 0 });
   const [drawnLines, setDrawnLines] = useState([]);
   const [extraTurns, setExtraTurns] = useState(0);
   const [gameOver, setGameOver] = useState(false);
@@ -512,7 +442,12 @@ export default function App() {
     const timer = setInterval(() => {
       setPulseTime((prev) => {
         if (prev <= 0) {
-          setCurrentPlayer(currentPlayer === "X" ? "O" : "X");
+          setCurrentPlayer(
+            (p) =>
+              activePlayers[
+                (activePlayers.indexOf(p) + 1) % activePlayers.length
+              ],
+          );
           return 100;
         }
         return prev - decrement;
@@ -520,7 +455,14 @@ export default function App() {
     }, step);
 
     return () => clearInterval(timer);
-  }, [gameMode, currentPlayer, gameOver, isPlaytesting, appMode]);
+  }, [
+    gameMode,
+    currentPlayer,
+    gameOver,
+    isPlaytesting,
+    appMode,
+    activePlayers,
+  ]);
 
   const skipDialog = () => {
     setShowDialog(false);
@@ -585,7 +527,7 @@ export default function App() {
             "mov",
             "rot_cw",
             "rot_ccw",
-            "zapspace",
+            "neutral",
             "target",
             "void",
             "switch",
@@ -610,25 +552,34 @@ export default function App() {
   // 3. Turf Wars: Area Control Continuous Tally
   useEffect(() => {
     if (gameMode === "turf_wars") {
-      let xScore = 0;
-      let oScore = 0;
+      let newScores = { X: 0, O: 0, T: 0, S: 0 };
       board.flat().forEach((cell) => {
-        if (cell.piece === "X") xScore++;
-        if (cell.piece === "O") oScore++;
+        if (cell.piece && newScores[cell.piece] !== undefined) {
+          newScores[cell.piece]++;
+        }
       });
-      setScores({ X: xScore, O: oScore });
+      setScores((prev) => ({ ...prev, ...newScores }));
 
       if (gameOver) {
+        let maxScore = -1;
+        let winners = [];
+        activePlayers.forEach((p) => {
+          if (newScores[p] > maxScore) {
+            maxScore = newScores[p];
+            winners = [p];
+          } else if (newScores[p] === maxScore) {
+            winners.push(p);
+          }
+        });
+
         setWinMessage(
-          xScore > oScore
-            ? "X Wins Turf War!"
-            : oScore > xScore
-              ? "O Wins Turf War!"
-              : "Turf War Tie!",
+          winners.length === 1
+            ? `${winners[0]} Wins Turf War!`
+            : `Turf War Tie between ${winners.join(", ")}!`,
         );
       }
     }
-  }, [board, gameMode, gameOver]);
+  }, [board, gameMode, gameOver, activePlayers]);
 
   // Editor State
   const [editorTab, setEditorTab] = useState("tools");
@@ -654,24 +605,27 @@ export default function App() {
         currentGoals.some((g) => g.type === "standard")) ||
       (isPlaytesting && playtestMode === "standard");
 
-    if (isBotActive && currentPlayer === "O" && !gameOver) {
-      const timer = setTimeout(() => {
-        // Example of passing parameters based on a level goal or hardcoded state
-        const move = getProceduralMove(
-          board,
-          "O",
-          rows,
-          cols,
-          aiDiff,
-          aiBehavior,
-          gameMode,
-        );
-        if (move) {
-          resolveTurn(move.x, move.y);
-        }
-      }, 400);
+    if (isBotActive && currentPlayer !== "X" && !gameOver) {
+      if (isBotActive && currentPlayer !== "X" && !gameOver) {
+        const timer = setTimeout(() => {
+          // Example of passing parameters based on a level goal or hardcoded state
+          const move = getProceduralMove(
+            board,
+            currentPlayer,
+            rows,
+            cols,
+            aiDiff,
+            aiBehavior,
+            gameMode,
+            activePlayers,
+          );
+          if (move) {
+            resolveTurn(move.x, move.y);
+          }
+        }, 400);
 
-      return () => clearTimeout(timer);
+        return () => clearTimeout(timer);
+      }
     }
   }, [
     currentPlayer,
@@ -681,6 +635,7 @@ export default function App() {
     gameOver,
     aiDiff,
     aiBehavior,
+    activePlayers,
   ]);
 
   useEffect(() => {
@@ -724,6 +679,7 @@ export default function App() {
             dialogs,
             goals: currentGoals,
             aiBehavior,
+            activePlayers,
           };
           return updated;
         });
@@ -849,10 +805,11 @@ export default function App() {
     setRows(DEFAULT_ROWS);
     setBoard(createEmptyBoard(DEFAULT_COLS, DEFAULT_ROWS));
     setDialogs([]);
-    setScores({ X: 0, O: 0 });
+    setScores({ X: 0, O: 0, T: 0, S: 0 });
     setDrawnLines([]);
     setExtraTurns(0);
     setCurrentPlayer("X");
+    setActivePlayers(["X", "O"]);
     setGameOver(false);
     setIsPlaytesting(false);
     setBackupState(null);
@@ -862,54 +819,6 @@ export default function App() {
     setFailState(false);
     setMovesMade(0);
     setMaxComboAchieved(0);
-  };
-
-  const initDebugLevel = () => {
-    const size = 15;
-    let b = createEmptyBoard(size, size);
-    const elements = [
-      { t: "zapspace" },
-      { t: "dup", d: "r" },
-      { t: "dup", d: "d" },
-      { t: "dup", d: "l" },
-      { t: "dup", d: "u" },
-      { t: "zap", d: "r" },
-      { t: "zap", d: "d" },
-      { t: "zap", d: "l" },
-      { t: "zap", d: "u" },
-      { t: "mov", d: "r" },
-      { t: "mov", d: "d" },
-      { t: "mov", d: "l" },
-      { t: "mov", d: "u" },
-      { t: "rot_cw" },
-      { t: "rot_ccw" },
-      { t: "flip" },
-      { t: "locked_mech" },
-      { t: "locked_letter", l: "A" },
-      { t: "switch", l: "A" },
-      { t: "target" },
-    ];
-    elements.forEach((el, i) => {
-      let x = (i % 5) * 3 + 1;
-      let y = Math.floor(i / 5) * 3 + 1;
-      if (x < size && y < size) {
-        b[y][x] = {
-          ...b[y][x],
-          type: el.t !== "target" ? el.t : "empty",
-          dir: el.d,
-          letter: el.l,
-          isTarget: el.t === "target",
-        };
-        // Surround walls for visual test
-        b[y][x].walls = { r: true, b: true, bl: true, br: true };
-      }
-    });
-    setCols(size);
-    setRows(size);
-    setBoard(b);
-    setPan({ x: 50, y: 50 });
-    setZoom(1);
-    setAppMode("local");
   };
 
   // --- FIGMA CANVAS LOGIC (PORTED FROM ARCHITECT) ---
@@ -976,7 +885,7 @@ export default function App() {
   const resolveTurn = (startX, startY, isRemoteMove = false) => {
     if (isMultiplayer && !isRemoteMove) {
       if (
-        (isHost && currentPlayer === "O") ||
+        (isHost && currentPlayer !== "X") ||
         (!isHost && currentPlayer === "X")
       ) {
         return; // Ignore clicks if it's the other person's turn
@@ -999,7 +908,7 @@ export default function App() {
         "rot_cw",
         "rot_ccw",
         "dup",
-        "zapspace",
+        "neutral",
       ];
 
       while (changed) {
@@ -1081,7 +990,7 @@ export default function App() {
             cell.type !== "locked_mech" &&
             !cell.mechanicalLock &&
             cell.type !== "dup" &&
-            cell.type !== "zapspace" &&
+            cell.type !== "neutral" &&
             cell.type !== "locked_letter" &&
             !cell.piece
           ) {
@@ -1147,13 +1056,15 @@ export default function App() {
         if (cell.type === "locked_letter" && !cell.unlocked) continue;
         if (
           cell.type === "dup" ||
-          cell.type === "zapspace" ||
+          cell.type === "neutral" ||
           cell.type === "void"
         )
           continue;
 
-        if (cell.flipMod || cell.type === "flip")
-          piece = piece === "X" ? "O" : "X";
+        if (cell.flipMod || cell.type === "flip") {
+          let idx = activePlayers.indexOf(piece);
+          piece = activePlayers[(idx + 1) % activePlayers.length];
+        }
         if (cell.type === "trash") continue;
 
         const checkDup = (dx, dy, targetDir, pushX, pushY) => {
@@ -1293,7 +1204,7 @@ export default function App() {
                     !t.piece &&
                     !t.type.startsWith("locked") &&
                     t.type !== "dup" &&
-                    t.type !== "zapspace"
+                    t.type !== "neutral"
                   ) {
                     moverQueue.push({
                       from: { x: px, y: py },
@@ -1333,7 +1244,7 @@ export default function App() {
           target.piece ||
           target.type.startsWith("locked") ||
           target.type === "dup" ||
-          target.type === "zapspace" ||
+          target.type === "neutral" ||
           target.type === "void";
         let isCollision = targetCounts[`${m.to.x},${m.to.y}`] > 1;
 
@@ -1396,12 +1307,12 @@ export default function App() {
         cy = startY;
 
       const scoreRun = () => {
-        ["X", "O"].forEach((player) => {
+        activePlayers.forEach((player) => {
           let currentSeq = [];
           run.forEach((item) => {
             let p = item.cell.piece;
             let isDead = item.cell.dead;
-            let isWild = item.cell.type === "zapspace";
+            let isWild = item.cell.type === "neutral";
             if (!isDead && (p === player || isWild)) {
               currentSeq.push(item);
             } else {
@@ -1487,18 +1398,23 @@ export default function App() {
       }
 
       line.seq.forEach((item) => {
-        if (b[item.y][item.x].type !== "zapspace")
-          b[item.y][item.x].dead = true;
+        if (b[item.y][item.x].type !== "neutral") b[item.y][item.x].dead = true;
         b[item.y][item.x].lineId = lId;
       });
 
+      const playerColors = {
+        X: "#22d3ee",
+        O: "#fb7185",
+        T: "#34d399",
+        S: "#fbbf24",
+      };
       tempDrawnLines.push({
         id: lId,
         x1: line.seq[0].x,
         y1: line.seq[0].y,
         x2: line.seq[line.seq.length - 1].x,
         y2: line.seq[line.seq.length - 1].y,
-        color: line.player === "X" ? "#22d3ee" : "#fb7185",
+        color: playerColors[line.player] || "#ffffff",
       });
     });
 
@@ -1562,12 +1478,20 @@ export default function App() {
     if (appMode === "local" || (isPlaytesting && playtestMode === "manual")) {
       if (isFull) {
         matchOver = true;
+        let maxScore = -1;
+        let winners = [];
+        activePlayers.forEach((p) => {
+          if (tempScores[p] > maxScore) {
+            maxScore = tempScores[p];
+            winners = [p];
+          } else if (tempScores[p] === maxScore) {
+            winners.push(p);
+          }
+        });
         wMsg =
-          tempScores.X > tempScores.O
-            ? "Player X Wins!"
-            : tempScores.O > tempScores.X
-              ? "Player O Wins!"
-              : "Tie!";
+          winners.length === 1
+            ? `Player ${winners[0]} Wins!`
+            : `Tie between ${winners.join(", ")}!`;
       }
     } else if (
       appMode === "solo" ||
@@ -1589,7 +1513,11 @@ export default function App() {
 
       currentGoals.forEach((g) => {
         if (g.type === "standard") {
-          if (isEndState && tempScores.X <= tempScores.O) {
+          let aiMax = 0;
+          activePlayers.forEach((p) => {
+            if (p !== "X" && tempScores[p] > aiMax) aiMax = tempScores[p];
+          });
+          if (isEndState && tempScores.X <= aiMax) {
             anyFailed = true;
             failMsg = "Failed: Score too low.";
           }
@@ -1659,14 +1587,16 @@ export default function App() {
     if (totalExtra > 0) {
       setExtraTurns(totalExtra - 1);
     } else {
-      setCurrentPlayer((p) =>
-        (appMode === "solo" || appMode === "campaign") &&
-        !currentGoals.some((g) => g.type === "standard")
-          ? "X"
-          : p === "X"
-            ? "O"
-            : "X",
-      );
+      setCurrentPlayer((p) => {
+        if (
+          (appMode === "solo" || appMode === "campaign") &&
+          !currentGoals.some((g) => g.type === "standard")
+        )
+          return "X";
+        return activePlayers[
+          (activePlayers.indexOf(p) + 1) % activePlayers.length
+        ];
+      });
     }
   };
 
@@ -1684,32 +1614,26 @@ export default function App() {
         if (e.type === "pointerdown") b[y][x].isTarget = !b[y][x].isTarget;
         else if (e.type === "pointerenter" && e.buttons === 1)
           b[y][x].isTarget = !b[y][x].isTarget; // Drag to toggle targets
-      } else if (editorTool === "place_x") {
+      } else if (editorTool.startsWith("place_")) {
         if (
           e.type === "pointerdown" ||
           (e.type === "pointerenter" && e.buttons === 1)
         ) {
-          b[y][x] = { ...b[y][x], piece: "X" };
-        }
-      } else if (editorTool === "place_o") {
-        if (
-          e.type === "pointerdown" ||
-          (e.type === "pointerenter" && e.buttons === 1)
-        ) {
-          b[y][x] = { ...b[y][x], piece: "O" };
+          const piece = editorTool.split("_")[1].toUpperCase();
+          b[y][x] = { ...b[y][x], piece };
         }
       } else if (editorTool === "locked_mech") {
         if (
           e.type === "pointerdown" ||
           (e.type === "pointerenter" && e.buttons === 1)
         ) {
-          // Can be placed on any element except duplicator, rotate, void, and zapspace
+          // Can be placed on any element except duplicator, rotate, void, and neutral
           const forbiddenTypes = [
             "dup",
             "rot_cw",
             "rot_ccw",
             "void",
-            "zapspace",
+            "neutral",
           ];
           if (!forbiddenTypes.includes(b[y][x].type)) {
             b[y][x] = { ...b[y][x], mechanicalLock: !b[y][x].mechanicalLock };
@@ -1720,7 +1644,7 @@ export default function App() {
           e.type === "pointerdown" ||
           (e.type === "pointerenter" && e.buttons === 1)
         ) {
-          const forbiddenTypes = ["void", "zapspace"];
+          const forbiddenTypes = ["void", "neutral"];
           if (!forbiddenTypes.includes(b[y][x].type)) {
             b[y][x] = { ...b[y][x], flipMod: !b[y][x].flipMod };
           }
@@ -1754,13 +1678,13 @@ export default function App() {
       target.type === "locked_mech" ||
       target.mechanicalLock ||
       target.type === "dup" ||
-      target.type === "zapspace"
+      target.type === "neutral"
     )
       return;
     if (target.piece) return;
 
     if (
-      currentPlayer === "O" &&
+      currentPlayer !== "X" &&
       appMode !== "local" &&
       appMode !== "multiplayer" &&
       appMode !== "editor"
@@ -1837,10 +1761,11 @@ export default function App() {
     }
     setDialogs(d);
 
-    setScores({ X: 0, O: 0 });
+    setScores({ X: 0, O: 0, T: 0, S: 0 });
     setDrawnLines([]);
     setExtraTurns(0);
     setCurrentPlayer("X");
+    setActivePlayers(["X", "O"]);
     setGameOver(false);
     setWinMessage("");
     setPan({ x: 50, y: 50 }); // Reset Camera
@@ -1914,12 +1839,6 @@ export default function App() {
           >
             PLAY ONLINE
           </button>
-          <button
-            onClick={initDebugLevel}
-            className="mt-4 p-2 bg-rose-900/20 text-rose-500 font-bold rounded-xl border border-rose-900/50 transition-all hover:bg-rose-900/40 text-sm"
-          >
-            [DEV] SPAWN DEBUG LEVEL
-          </button>
         </div>
       </div>
     );
@@ -1935,6 +1854,36 @@ export default function App() {
               ? "LOCAL MATCH CONFIG"
               : "SOLO PUZZLE CONFIG"}
           </h2>
+
+          <div>
+            <label className="text-xs text-slate-400 font-bold block mb-1">
+              {appMode === "local_setup" ? "PLAYERS" : "OPPONENTS (AI)"}
+            </label>
+            <select
+              value={activePlayers.length}
+              onChange={(e) => {
+                const count = parseInt(e.target.value);
+                setActivePlayers(["X", "O", "T", "S"].slice(0, count));
+              }}
+              className="w-full bg-slate-800 text-white p-2 rounded outline-none border border-slate-700"
+            >
+              <option value="2">
+                {appMode === "local_setup"
+                  ? "2 Players (X vs O)"
+                  : "1 Bot (X vs O)"}
+              </option>
+              <option value="3">
+                {appMode === "local_setup"
+                  ? "3 Players (X, O, T)"
+                  : "2 Bots (X vs O vs T)"}
+              </option>
+              <option value="4">
+                {appMode === "local_setup"
+                  ? "4 Players (X, O, T, S)"
+                  : "3 Bots (X vs O vs T vs S)"}
+              </option>
+            </select>
+          </div>
 
           {appMode === "solo_setup" && (
             <div>
@@ -2035,7 +1984,7 @@ export default function App() {
               onClick={() => {
                 if (!board || board.length !== rows || board[0].length !== cols)
                   setBoard(createEmptyBoard(cols, rows));
-                setScores({ X: 0, O: 0 });
+                setScores({ X: 0, O: 0, T: 0, S: 0 });
                 setDrawnLines([]);
                 setExtraTurns(0);
                 setCurrentPlayer("X");
@@ -2060,6 +2009,7 @@ export default function App() {
     difficulty,
     aiBehavior,
     gameMode,
+    activePlayers = ["X", "O"],
   ) => {
     let validMoves = [];
     for (let y = 0; y < rows; y++) {
@@ -2072,7 +2022,7 @@ export default function App() {
           cell.type !== "locked_mech" &&
           !cell.mechanicalLock &&
           cell.type !== "dup" &&
-          cell.type !== "zapspace" &&
+          cell.type !== "neutral" &&
           cell.type !== "locked_letter" &&
           cell.type !== "trash" &&
           !cell.piece
@@ -2087,7 +2037,7 @@ export default function App() {
 
     let bestMove = null;
     let highestUtility = -Infinity;
-    const opponentPiece = aiPiece === "X" ? "O" : "X";
+    const opponents = activePlayers.filter((p) => p !== aiPiece);
 
     const getGravityY = (startX, startY) => {
       let finalY = startY;
@@ -2098,7 +2048,7 @@ export default function App() {
         "rot_cw",
         "rot_ccw",
         "dup",
-        "zapspace",
+        "neutral",
       ];
       while (finalY + 1 < rows) {
         let current = board[finalY][startX];
@@ -2250,12 +2200,12 @@ export default function App() {
 
         let actualPiece = aiPiece;
         if (targetCell.type === "flip" || targetCell.flipMod)
-          actualPiece = opponentPiece;
+          actualPiece = opponents[0]; // Simplified flip logic for >2 bots
         else if (targetCell.type === "trash") actualPiece = null;
 
         // MENACE LOGIC: Weaponize overwrites
         if (isOverwrite) {
-          if (targetCell.piece === opponentPiece)
+          if (opponents.includes(targetCell.piece))
             utility += 800; // Assassinate opponent
           else if (targetCell.piece === aiPiece) utility -= 500; // Avoid suicide
         }
@@ -2269,7 +2219,7 @@ export default function App() {
 
         if (targetCell.isTarget) {
           if (actualPiece === aiPiece) utility += 50;
-          else if (actualPiece === opponentPiece) utility -= 50;
+          else if (opponents.includes(actualPiece)) utility -= 50;
         }
 
         if (actualPiece === null) {
@@ -2323,11 +2273,13 @@ export default function App() {
           utility +=
             checkLinePotential(aiPiece) *
             (aiBehavior === "aggressive" ? 1.5 : 1);
-          utility +=
-            checkLinePotential(opponentPiece) *
-            (aiBehavior === "defensive" ? 1.5 : 1.2);
-        } else if (actualPiece === opponentPiece) {
-          utility -= checkLinePotential(opponentPiece) * 2;
+          opponents.forEach((opp) => {
+            utility +=
+              checkLinePotential(opp) *
+              (aiBehavior === "defensive" ? 1.5 : 1.2);
+          });
+        } else if (opponents.includes(actualPiece)) {
+          utility -= checkLinePotential(actualPiece) * 2;
           utility -= 100;
         }
       });
@@ -2663,7 +2615,7 @@ export default function App() {
                           currentPlayer,
                           gameOver,
                         });
-                        setScores({ X: 0, O: 0 });
+                        setScores({ X: 0, O: 0, T: 0, S: 0 });
                         setDrawnLines([]);
                         setExtraTurns(0);
                         setCurrentPlayer("X");
@@ -2685,7 +2637,7 @@ export default function App() {
                           currentPlayer,
                           gameOver,
                         });
-                        setScores({ X: 0, O: 0 });
+                        setScores({ X: 0, O: 0, T: 0, S: 0 });
                         setDrawnLines([]);
                         setExtraTurns(0);
                         setCurrentPlayer("X");
@@ -2714,19 +2666,19 @@ export default function App() {
                   <label className="text-[10px] text-slate-500 font-bold uppercase mt-2 block">
                     Pieces
                   </label>
-                  <div className="grid grid-cols-3 gap-1.5">
-                    {["place_x", "place_o"].map((t) => (
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {["place_x", "place_o", "place_t", "place_s"].map((t) => (
                       <button
                         key={t}
                         onClick={() => setEditorTool(t)}
                         className={`p-1.5 rounded border text-[10px] uppercase font-bold ${editorTool === t ? "bg-green-500/30 border-green-400 text-green-200" : "bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700"}`}
                       >
-                        {t === "place_x" ? "PLACE X" : "PLACE O"}
+                        {t.replace("_", " ")}
                       </button>
                     ))}
                   </div>
                   <div className="grid grid-cols-3 gap-1.5">
-                    {["zapspace", "trash", "switch"].map((t) => (
+                    {["neutral", "trash", "switch"].map((t) => (
                       <button
                         key={t}
                         onClick={() => setEditorTool(t)}
@@ -2814,6 +2766,40 @@ export default function App() {
 
               {editorTab === "settings" && (
                 <div className="flex flex-col h-full gap-3">
+                  <div className="p-3 bg-slate-950 rounded border border-slate-800 flex flex-col gap-2">
+                    <label className="text-[10px] text-slate-500 font-bold uppercase">
+                      Players
+                    </label>
+                    <select
+                      value={activePlayers.length}
+                      onChange={(e) => {
+                        const count = parseInt(e.target.value);
+                        setActivePlayers(["X", "O", "T", "S"].slice(0, count));
+                      }}
+                      className="w-full bg-slate-800 text-white p-1.5 rounded border border-slate-700 text-xs outline-none"
+                    >
+                      <option value="2">2 Players (X, O)</option>
+                      <option value="3">3 Players (X, O, T)</option>
+                      <option value="4">4 Players (X, O, T, S)</option>
+                    </select>
+                  </div>
+                  <div className="p-3 bg-slate-950 rounded border border-slate-800 flex flex-col gap-2">
+                    <label className="text-[10px] text-slate-500 font-bold uppercase">
+                      Players
+                    </label>
+                    <select
+                      value={activePlayers.length}
+                      onChange={(e) => {
+                        const count = parseInt(e.target.value);
+                        setActivePlayers(["X", "O", "T", "S"].slice(0, count));
+                      }}
+                      className="w-full bg-slate-800 text-white p-1.5 rounded border border-slate-700 text-xs outline-none"
+                    >
+                      <option value="2">2 Players (X, O)</option>
+                      <option value="3">3 Players (X, O, T)</option>
+                      <option value="4">4 Players (X, O, T, S)</option>
+                    </select>
+                  </div>
                   <div className="p-3 bg-slate-950 rounded border border-slate-800 flex flex-col gap-2">
                     <label className="text-[10px] text-slate-500 font-bold uppercase">
                       Game Mode
@@ -3129,6 +3115,7 @@ export default function App() {
                           dialogs,
                           goals: currentGoals,
                           aiBehavior,
+                          activePlayers,
                         };
 
                         if (
@@ -3414,7 +3401,7 @@ export default function App() {
                       Turn
                     </p>
                     <div
-                      className={`text-6xl font-black transition-colors ${currentPlayer === "X" ? "text-cyan-400" : "text-rose-400"} drop-shadow-md`}
+                      className={`text-6xl font-black transition-colors ${currentPlayer === "X" ? "text-cyan-400" : currentPlayer === "O" ? "text-rose-400" : currentPlayer === "T" ? "text-emerald-400" : "text-amber-400"} drop-shadow-md`}
                     >
                       {currentPlayer}
                     </div>
@@ -3569,7 +3556,6 @@ export default function App() {
                           stroke="#94a3b8"
                           strokeWidth="4"
                           strokeLinecap="round"
-                          className="drop-shadow-[0_0_3px_rgba(0,0,0,0.8)]"
                         />
                       )}
                       {cell.walls.b && (
@@ -3581,7 +3567,6 @@ export default function App() {
                           stroke="#94a3b8"
                           strokeWidth="4"
                           strokeLinecap="round"
-                          className="drop-shadow-[0_0_3px_rgba(0,0,0,0.8)]"
                         />
                       )}
 
@@ -3593,9 +3578,8 @@ export default function App() {
                           x2={`${((x + 1.2) * 100) / cols}%`}
                           y2={`${((y + 1.2) * 100) / rows}%`}
                           stroke="#94a3b8"
-                          strokeWidth="6"
+                          strokeWidth="4"
                           strokeLinecap="round"
-                          className="drop-shadow-[0_0_3px_rgba(0,0,0,0.8)]"
                         />
                       )}
                       {cell.walls.bl && (
@@ -3605,9 +3589,8 @@ export default function App() {
                           x2={`${((x - 0.2) * 100) / cols}%`}
                           y2={`${((y + 1.2) * 100) / rows}%`}
                           stroke="#94a3b8"
-                          strokeWidth="6"
+                          strokeWidth="4"
                           strokeLinecap="round"
-                          className="drop-shadow-[0_0_3px_rgba(0,0,0,0.8)]"
                         />
                       )}
                     </React.Fragment>
@@ -3735,57 +3718,80 @@ export default function App() {
                       )}
 
                       {!isVoid && (
-                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none p-1.5 select-none">
-                          {cell.type === "zapspace" && (
-                            <IconZapspace dead={cell.dead} />
-                          )}
-                          {cell.type === "dup" && <IconDup dir={cell.dir} />}
-                          {cell.type === "zap" && <IconZap dir={cell.dir} />}
-                          {cell.type === "mov" && <IconMov dir={cell.dir} />}
-                          {cell.type === "rot_cw" && <IconRot cw={true} />}
-                          {cell.type === "rot_ccw" && <IconRot cw={false} />}
-                          {cell.type === "flip" && <IconFlip />}
-                          {cell.type === "trash" && <IconTrash />}
-                          {cell.type === "locked_mech" && <IconLockedMech />}
+                        <div
+                          style={{
+                            transform: ["zap", "mov", "dup"].includes(cell.type)
+                              ? `rotate(${
+                                  { u: 0, r: 90, d: 180, l: 270 }[cell.dir] || 0
+                                }deg)`
+                              : "none",
+                          }}
+                          className={`absolute inset-0 flex items-center justify-center pointer-events-none p-1.5 select-none`}
+                        >
+                          {(() => {
+                            const bgIcon = getCellBgIcon(cell);
+                            if (!bgIcon) return null;
 
-                          {cell.type === "switch" && (
-                            <span className="font-mono text-xs font-bold text-amber-400 select-none">
-                              [{cell.letter}]
-                            </span>
-                          )}
+                            return (
+                              <>
+                                {/* Base Cell Icon */}
+                                <img
+                                  src={`/icons/${bgIcon}.svg`}
+                                  alt={cell.type}
+                                  style={{
+                                    width: `${iconSizes[cell.type] || 32}px`,
+                                    height: `${iconSizes[cell.type] || 32}px`,
+                                  }}
+                                  className={`absolute z-0 opacity-80 pointer-events-none transition-all ${
+                                    cell.type === "rot_ccw"
+                                      ? "-scale-x-100"
+                                      : ""
+                                  }`}
+                                />
 
-                          {cell.type === "locked_letter" && (
-                            <div
-                              className={`border-2 rounded font-mono text-xs font-black flex items-center justify-center w-2/3 h-2/3 select-none
-                               ${cell.unlocked ? "border-slate-700 text-slate-700" : "border-slate-500 text-slate-400"}`}
-                            >
-                              {cell.letter}
-                            </div>
-                          )}
+                                {/* Layered Modifiers */}
+                                {cell.mechanicalLock && (
+                                  <img
+                                    src="/icons/Lock.svg"
+                                    alt="locked_mech"
+                                    style={{
+                                      width: `${iconSizes.locked_mech || 32}px`,
+                                      height: `${iconSizes.locked_mech || 32}px`,
+                                    }}
+                                    className="absolute z-20 pointer-events-none"
+                                  />
+                                )}
+                                {cell.flipMod && (
+                                  <img
+                                    src="/icons/Flip.svg"
+                                    alt="flip"
+                                    style={{
+                                      width: `${iconSizes.flip || 32}px`,
+                                      height: `${iconSizes.flip || 32}px`,
+                                    }}
+                                    className="absolute z-5 pointer-events-none"
+                                  />
+                                )}
+                              </>
+                            );
+                          })()}
 
-                          {cell.mechanicalLock && (
-                            <div className="absolute z-5 inset-0 flex items-center justify-center pointer-events-none">
-                              <IconLockedMech />
-                            </div>
-                          )}
-
-                          {cell.flipMod && (
-                            <div className="absolute z-5 inset-0 flex items-center justify-center pointer-events-none opacity-50">
-                              <IconFlip />
-                            </div>
-                          )}
-
+                          {/* Player Piece Icon */}
                           {cell.piece && (
-                            <div
-                              className={`absolute z-10 font-black transition-all duration-300 text-3xl select-none
-                                ${cell.piece === "X" ? "text-cyan-400" : "text-rose-400"}
-                                ${cell.dead && cell.type !== "zapspace" ? "opacity-30 grayscale blur-[0.5px]" : "drop-shadow-[0_0_8px_rgba(255,255,255,0.6)]"}`}
+                            <img
+                              src={`/icons/${cell.piece === "N" ? "Neutral" : cell.piece}.svg`}
+                              alt={cell.piece}
                               style={{
-                                transform: `rotate(${cell.rotation || 0}deg)`,
+                                width: `${iconSizes[cell.piece] || 40}px`,
+                                height: `${iconSizes[cell.piece] || 40}px`,
                               }}
-                            >
-                              {cell.piece}
-                            </div>
+                              className={`absolute z-10 transition-all duration-300 select-none pointer-events-none
+                    ${
+                      cell.dead && cell.piece !== "N"
+                        ? "opacity-30 grayscale blur-[0.5px]"
+                        : "drop-shadow-[0_0_8px_rgba(255,255,255,0.6)]"
+                    }`}
+                            />
                           )}
                         </div>
                       )}
