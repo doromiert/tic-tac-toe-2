@@ -29,33 +29,6 @@ const DEFAULT_COLS = 9;
 const DEFAULT_ROWS = 9;
 const MAX_ITERATIONS = 200;
 
-const DEFAULT_CAMPAIGN_FALLBACK = [
-  {
-    name: "Tutorial",
-    cols: 5,
-    rows: 5,
-    dialogs: [
-      { name: "doromiert", text: "welcome to tic tac toe 2" },
-      { name: "doromiert", text: 'this is just a fallback "campaign"' },
-    ],
-    goal: { type: "min_combo", target: 1 },
-    board: Array(5)
-      .fill(null)
-      .map(() =>
-        Array(5)
-          .fill(null)
-          .map(() => ({
-            type: "empty",
-            walls: { r: false, b: false, br: false, bl: false },
-            dead: false,
-            lineId: null,
-            isTarget: false,
-            mechanicalLock: false,
-          })),
-      ),
-  },
-];
-
 // --- ICON COMPONENTS (Unselectable) ---
 const IconZapspace = ({ dead }) => (
   <svg
@@ -428,7 +401,7 @@ export default function App() {
         })
         .catch(() => {
           setSavedCampaigns([]);
-          localStorage.setItem("t3_campaigns", JSON.stringify([]));
+          localStorage.setItem("t3_campaigns", "[]");
         });
     }
   }, []);
@@ -758,7 +731,7 @@ export default function App() {
     fetch("./default.json")
       .then((res) => res.json())
       .then((data) => setCampaign(data))
-      .catch(() => setCampaign(DEFAULT_CAMPAIGN_FALLBACK));
+      .catch(() => setCampaign({}));
     setUnlockedLevels([0]);
   }, []);
 
