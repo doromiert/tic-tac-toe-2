@@ -566,11 +566,14 @@ export default function App() {
              if (px>=0 && px<cols && py>=0 && py<rows && b[py][px].type !== 'void') {
                  let pCell = b[py][px];
                  if (pCell.piece && !pCell.dead) {
-                    let nx = x + (isCW ? -dy : dy);
-                    let ny = y + (isCW ? dx : -dx);
-                    if (nx>=0 && nx<cols && ny>=0 && ny<rows && b[ny][nx].type !== 'void') {
-                       moverQueue.push({from: {x:px, y:py}, to: {x:nx, y:ny}, piece: pCell.piece, rotation: pCell.rotation || 0, isRot: true, isCW});
-                    }
+                    let nx = x + (isCW ? -dy : dy);
+                    let ny = y + (isCW ? dx : -dx);
+                    if (nx>=0 && nx<cols && ny>=0 && ny<rows && b[ny][nx].type !== 'void') {
+                        let t = b[ny][nx];
+                        if (!t.piece && !t.type.startsWith('locked') && t.type !== 'dup' && t.type !== 'zapspace') {
+                           moverQueue.push({from: {x:px, y:py}, to: {x:nx, y:ny}, piece: pCell.piece, rotation: pCell.rotation || 0, isRot: true, isCW});
+                        }
+                    }
                  }
              }
           });
@@ -869,7 +872,7 @@ export default function App() {
     if (target.type === 'locked_mech' || target.mechanicalLock || target.type === 'dup' || target.type === 'zapspace') return; 
     if (target.piece) return; 
 
-    if (currentPlayer === 'O' && appMode !== 'local' && appMode !== 'multiplayer') {
+    if (currentPlayer === 'O' && appMode !== 'local' && appMode !== 'multiplayer' && appMode !== 'editor') {
         return;
     }
 
@@ -1173,11 +1176,14 @@ function getProceduralMove(board, currentPlayer, rows, cols, difficulty = 'norma
                     if (px >= 0 && px < cols && py >= 0 && py < rows && b[py][px].type !== 'void') {
                         let pCell = b[py][px];
                         if (pCell.piece && !pCell.dead) {
-                            let nx = x + (isCW ? -dy : dy);
-                            let ny = y + (isCW ? dx : -dx);
-                            if (nx >= 0 && nx < cols && ny >= 0 && ny < rows && b[ny][nx].type !== 'void') {
-                                moverQueue.push({from: {x:px, y:py}, to: {x:nx, y:ny}, piece: pCell.piece, rotation: pCell.rotation || 0, isRot: true, isCW});
-                            }
+                            let nx = x + (isCW ? -dy : dy);
+                            let ny = y + (isCW ? dx : -dx);
+                            if (nx >= 0 && nx < cols && ny >= 0 && ny < rows && b[ny][nx].type !== 'void') {
+                                let t = b[ny][nx];
+                                if (!t.piece && !t.type.startsWith('locked') && t.type !== 'dup' && t.type !== 'zapspace') {
+                                    moverQueue.push({from: {x:px, y:py}, to: {x:nx, y:ny}, piece: pCell.piece, rotation: pCell.rotation || 0, isRot: true, isCW});
+                                }
+                            }
                         }
                     }
                 });
@@ -2065,3 +2071,4 @@ function countPoints(boardState, targetPlayer, rows, cols) {
     </div>
   );
 }
+
