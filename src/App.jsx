@@ -243,8 +243,8 @@ export default function App() {
     if (gameMode === 'corruption') {
       let validSpaces = [];
       nextBoard.forEach((row, y) => row.forEach((cell, x) => {
-        const bl = ['dup', 'zap', 'mov', 'rot_cw', 'rot_ccw', 'zapspace', 'target', 'void', 'locked_mech', 'locked_letter'];
-        if (!bl.includes(cell.type)) validSpaces.push({x, y});
+        const bl = ['dup', 'zap', 'mov', 'rot_cw', 'rot_ccw', 'zapspace', 'target', 'void', 'switch', 'locked_letter'];
+        if (!bl.includes(cell.type) && !cell.dead && !cell.piece) validSpaces.push({x, y});
       }));
       
       if (validSpaces.length > 0) {
@@ -663,17 +663,41 @@ export default function App() {
 
     moverQueue.forEach(m => b[m.from.y][m.from.x].piece = null); 
     
+    let resolved = false;
+    let validMoves = [...moverQueue];
+    
+    while (!resolved) {
+        resolved = true;
+        let stillValid = [];
+        let targetCounts = {};
+        
+        validMoves.forEach(m => {
+            let key = `${m.to.x},${m.to.y}`;
+            targetCounts[key] = (targetCounts[key] || 0) + 1;
+        });
+
+        validMoves.forEach(m => {
+            let target = b[m.to.y][m.to.x];
+            let isBlocked = target.piece || target.type.startsWith('locked') || target.type === 'dup' || target.type === 'zapspace' || target.type === 'void';
+            let isCollision = targetCounts[`${m.to.x},${m.to.y}`] > 1;
+            
+            if (isBlocked || isCollision) {
+                b[m.from.y][m.from.x].piece = m.piece;
+                b[m.from.y][m.from.x].rotation = m.rotation;
+                resolved = false;
+            } else {
+                stillValid.push(m);
+            }
+        });
+        validMoves = stillValid;
+    }
+
     let newQueue = [];
-    moverQueue.forEach(m => {
-      let target = b[m.to.y][m.to.x];
-      if (!target.piece && !target.type.startsWith('locked') && target.type !== 'dup' && target.type !== 'zapspace' && target.type !== 'void') {
-         target.piece = m.piece;
-         target.rotation = m.isRot ? m.rotation + (m.isCW ? 90 : -90) : m.rotation;
-         newQueue.push({x: m.to.x, y: m.to.y, piece: m.piece, overwrite: false});
-      } else {
-         b[m.from.y][m.from.x].piece = m.piece; 
-         b[m.from.y][m.from.x].rotation = m.rotation;
-      }
+    validMoves.forEach(m => {
+        let target = b[m.to.y][m.to.x];
+        target.piece = m.piece;
+        target.rotation = m.isRot ? m.rotation + (m.isCW ? 90 : -90) : m.rotation;
+        newQueue.push({x: m.to.x, y: m.to.y, piece: m.piece, overwrite: false});
     });
 
     if (newQueue.length > 0) processReactions(newQueue);
@@ -1273,20 +1297,46 @@ function getProceduralMove(board, currentPlayer, rows, cols, difficulty = 'norma
     });
 
     moverQueue.forEach(m => b[m.from.y][m.from.x].piece = null); 
+    moverQueue.forEach(m => b[m.from.y][m.from.x].piece = null); 
     
+    let resolved = false;
+    let validMoves = [...moverQueue];
+    
+    while (!resolved) {
+        resolved = true;
+        let stillValid = [];
+        let targetCounts = {};
+        
+        validMoves.forEach(m => {
+            let key = `${m.to.x},${m.to.y}`;
+            targetCounts[key] = (targetCounts[key] || 0) + 1;
+        });
+
+        validMoves.forEach(m => {
+            let target = b[m.to.y][m.to.x];
+            let isBlocked = target.piece || target.type.startsWith('locked') || target.type === 'dup' || target.type === 'zapspace' || target.type === 'void';
+            let isCollision = targetCounts[`${m.to.x},${m.to.y}`] > 1;
+            
+            if (isBlocked || isCollision) {
+                b[m.from.y][m.from.x].piece = m.piece;
+                b[m.from.y][m.from.x].rotation = m.rotation;
+                resolved = false;
+            } else {
+                stillValid.push(m);
+            }
+        });
+        validMoves = stillValid;
+    }
+
     let newQueue = [];
-    moverQueue.forEach(m => {
+    validMoves.forEach(m => {
         let target = b[m.to.y][m.to.x];
-        if (!target.piece && !target.type.startsWith('locked') && target.type !== 'dup' && target.type !== 'zapspace' && target.type !== 'void') {
-            target.piece = m.piece;
-            target.rotation = m.isRot ? m.rotation + (m.isCW ? 90 : -90) : m.rotation;
-            newQueue.push({x: m.to.x, y: m.to.y, piece: m.piece, overwrite: false});
-        } else {
-            b[m.from.y][m.from.x].piece = m.piece; 
-            b[m.from.y][m.from.x].rotation = m.rotation;
-        }
+        target.piece = m.piece;
+        target.rotation = m.isRot ? m.rotation + (m.isCW ? 90 : -90) : m.rotation;
+        newQueue.push({x: m.to.x, y: m.to.y, piece: m.piece, overwrite: false});
     });
 
+    if (newQueue.length > 0) processReactions(newQueue);
     if (newQueue.length > 0) processReactions(newQueue);
 
     // --- PHASE 3: LINE REVIVALS ---
@@ -2195,6 +2245,7 @@ function countPoints(boardState, targetPlayer, rows, cols) {
     </div>
   );
 }
+
 
 
 
