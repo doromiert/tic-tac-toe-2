@@ -297,7 +297,7 @@ export default function App() {
     if (isBotActive && currentPlayer === 'O' && !gameOver) {
         const timer = setTimeout(() => {
             // Example of passing parameters based on a level goal or hardcoded state
-                const move = getProceduralMove(board, 'O', rows, cols, aiDiff, aiBehavior);
+                const move = getProceduralMove(board, 'O', rows, cols, aiDiff, aiBehavior, gameMode);
             if (move) {
                 resolveTurn(move.x, move.y);
             }
@@ -1120,13 +1120,14 @@ export default function App() {
                <label className="w-full py-3 bg-slate-800 text-slate-300 rounded font-bold cursor-pointer text-center block hover:bg-slate-700 border border-slate-700">
                  IMPORT LEVEL JSON
                  <input type="file" accept=".json" className="hidden" onChange={(e) => handleLevelImport(e, (d) => {
+                    console.log("Loaded level data:", d);
                     setGameMode(d.gameMode || 'standard');
                      setCols(d.cols || d.gridSize || 9);
                      setRows(d.rows || d.gridSize || 9);
                      setBoard(JSON.parse(JSON.stringify(d.board)));
                      setCurrentGoals(d.goals || (d.goal ? [d.goal] : [{ type: 'standard', target: 0 }]));
                      setAiBehavior(d.aiBehavior || 'standard');
-                     alert("Level Loaded!");
+                        console.log(gameMode)
                  })} />
                </label>
             </div>
@@ -1148,8 +1149,8 @@ export default function App() {
  * Procedural AI Evaluator (V2)
  * Features GOAP JSON integration, difficulty scaling, and behavioral stances.
  */
-function getProceduralMove(board, currentPlayer, rows, cols, difficulty = 'normal', aiBehavior = 'standard') {
-    const opponent = currentPlayer === 'X' ? 'O' : 'X';
+function getProceduralMove(board, currentPlayer, rows, cols, difficulty = 'normal', aiBehavior = 'standard', gameMode = 'standard') {
+    const opponent = currentPlayer === 'X' ? 'O' : 'X';
     
     // 1. Identify valid actionable tiles
     const validMoves = [];
@@ -1297,46 +1298,20 @@ function getProceduralMove(board, currentPlayer, rows, cols, difficulty = 'norma
     });
 
     moverQueue.forEach(m => b[m.from.y][m.from.x].piece = null); 
-    moverQueue.forEach(m => b[m.from.y][m.from.x].piece = null); 
     
-    let resolved = false;
-    let validMoves = [...moverQueue];
-    
-    while (!resolved) {
-        resolved = true;
-        let stillValid = [];
-        let targetCounts = {};
-        
-        validMoves.forEach(m => {
-            let key = `${m.to.x},${m.to.y}`;
-            targetCounts[key] = (targetCounts[key] || 0) + 1;
-        });
-
-        validMoves.forEach(m => {
-            let target = b[m.to.y][m.to.x];
-            let isBlocked = target.piece || target.type.startsWith('locked') || target.type === 'dup' || target.type === 'zapspace' || target.type === 'void';
-            let isCollision = targetCounts[`${m.to.x},${m.to.y}`] > 1;
-            
-            if (isBlocked || isCollision) {
-                b[m.from.y][m.from.x].piece = m.piece;
-                b[m.from.y][m.from.x].rotation = m.rotation;
-                resolved = false;
-            } else {
-                stillValid.push(m);
-            }
-        });
-        validMoves = stillValid;
-    }
-
     let newQueue = [];
-    validMoves.forEach(m => {
+    moverQueue.forEach(m => {
         let target = b[m.to.y][m.to.x];
-        target.piece = m.piece;
-        target.rotation = m.isRot ? m.rotation + (m.isCW ? 90 : -90) : m.rotation;
-        newQueue.push({x: m.to.x, y: m.to.y, piece: m.piece, overwrite: false});
+        if (!target.piece && !target.type.startsWith('locked') && target.type !== 'dup' && target.type !== 'zapspace' && target.type !== 'void') {
+            target.piece = m.piece;
+            target.rotation = m.isRot ? m.rotation + (m.isCW ? 90 : -90) : m.rotation;
+            newQueue.push({x: m.to.x, y: m.to.y, piece: m.piece, overwrite: false});
+        } else {
+            b[m.from.y][m.from.x].piece = m.piece; 
+            b[m.from.y][m.from.x].rotation = m.rotation;
+        }
     });
 
-    if (newQueue.length > 0) processReactions(newQueue);
     if (newQueue.length > 0) processReactions(newQueue);
 
     // --- PHASE 3: LINE REVIVALS ---
@@ -1375,18 +1350,22 @@ function getProceduralMove(board, currentPlayer, rows, cols, difficulty = 'norma
     let isDefenseMode = false;
     let isAttackMode = false;
 
-    if (aiBehavior === 'standard') {
-        // "player score greater than AI's score by 50% of the average"
-        if (currentScorePlayer > currentScoreAI + (avgScore * 0.5)) {
-            isDefenseMode = true;
-        } else {
-            isAttackMode = true;
-        }
-    } else if (aiBehavior === 'defensive') {
-        isDefenseMode = true;
-    } else if (aiBehavior === 'aggressive') {
-        isAttackMode = true;
-    }
+    if (aiBehavior === 'standard') {
+        // "player score greater than AI's score by 50% of the average"
+        if (currentScorePlayer > currentScoreAI + (avgScore * 0.5)) {
+            isDefenseMode = true;
+        } else if (currentScorePlayer < currentScoreAI - (avgScore * 0.5)) {
+            // "player score lesser than AI's score by 50% of the average"
+            isAttackMode = true;
+        } else {
+            // "Score equal"
+            isAttackMode = true;
+        }
+    } else if (aiBehavior === 'defensive') {
+        isDefenseMode = true;
+    } else if (aiBehavior === 'aggressive') {
+        isAttackMode = true;
+    }
 
     // Helper: Calculates immediate spatial connection length before chain reactions
     const getSeqLength = (brd, tx, ty, playerColor) => {
@@ -1419,34 +1398,79 @@ function getProceduralMove(board, currentPlayer, rows, cols, difficulty = 'norma
         const aiScoreGain = countPoints(simBoard, currentPlayer, rows, cols) - currentScoreAI;
         const playerScoreBlocked = countPoints(simOppBoard, opponent, rows, cols) - currentScorePlayer;
 
-        // --- GOAP TREE: ACTION EVALUATION ---
-        
-        // "finish the 5 tower"
-        if (aiSeq >= 5) utility += 20000;
-        
-        // "attempt to set up a 5 in a row -> finish 4 -> finish 3"
-        if (aiScoreGain > 0) utility += 10000 + (aiSeq * 1000); 
+                // --- GOAP TREE: ACTION EVALUATION ---
+        const targetCell = board[move.y][move.x];
+        const isMoveInZone = targetCell.isTarget;
+        
+        let isDupAdjacent = false;
+        const orthogonalDirs = [[0,-1], [1,0], [0,1], [-1,0]];
+        orthogonalDirs.forEach(([dx, dy]) => {
+            let nx = move.x + dx, ny = move.y + dy;
+            if (nx >= 0 && nx < cols && ny >= 0 && ny < rows && board[ny][nx].type === 'dup') {
+                isDupAdjacent = true;
+            }
+        });
 
-        // "block any found 3 in a row before they happen" & "player nearing 4"
-        if (playerScoreBlocked > 0) {
-            // "prioritize higher scoring blocks over lower scoring ones"
-            utility += 8000 + (playerThreatSeq * 500); 
-        }
-
-        // --- STANCE MODIFIERS ---
-        if (isDefenseMode) {
-            // "go into defense mode": massively inflate blocking values
-            if (playerThreatSeq >= 2) utility += 5000;
-            if (aiBehavior === 'defensive' && utility === 0) {
-                // "random placement" fallback if nothing to defend
-                utility += Math.random() * 50; 
-            }
-        }
-
-        if (isAttackMode) {
-            // "go into attack mode": value building lines higher than blocking small ones
-            utility += (aiSeq * 500);
-        }
+        if (gameMode === 'standard') {
+            if (isDefenseMode) {
+                if (playerThreatSeq >= 2) {
+                    if (playerThreatSeq >= 3) {
+                        utility += 15000 + (playerScoreBlocked > 0 ? playerScoreBlocked * 10 : 0);
+                    } else {
+                        utility += 8000 + (playerScoreBlocked > 0 ? playerScoreBlocked * 5 : 0);
+                    }
+                } else {
+                    if (aiSeq >= 2) {
+                        utility += 5000 + (aiScoreGain > 0 ? aiScoreGain * 5 : 0);
+                    } else {
+                        utility += 1000 + (aiSeq * 100);
+                    }
+                }
+                if (aiBehavior === 'defensive' && utility === 0) utility += Math.random() * 50; 
+            }
+            if (isAttackMode) {
+                if (playerThreatSeq >= 3) {
+                    utility += 12000 + (playerScoreBlocked > 0 ? playerScoreBlocked * 10 : 0);
+                } else {
+                    if (aiSeq >= 4) {
+                        utility += 20000;
+                    } else {
+                        utility += 10000 + (aiSeq * 1000) + (aiScoreGain > 0 ? aiScoreGain * 5 : 0);
+                    }
+                }
+            }
+        } else if (gameMode === 'zone_control') {
+            if (isDefenseMode) {
+                if (playerThreatSeq >= 2 && isMoveInZone) {
+                    utility += 15000 + (playerScoreBlocked * 10);
+                } else {
+                    if (isMoveInZone) utility += 8000;
+                }
+            }
+            if (isAttackMode) {
+                if (isMoveInZone) {
+                    utility += 12000 + (aiSeq * 1000);
+                } else {
+                    utility += 5000 + (aiSeq * 500); 
+                }
+            }
+        } else if (gameMode === 'turf_war') {
+            if (isDefenseMode) {
+                if (isDupAdjacent) {
+                    utility += 15000 + (playerScoreBlocked * 10);
+                } else {
+                    if (aiSeq >= 2) utility += 5000 + (aiScoreGain * 5);
+                }
+            }
+            if (isAttackMode) {
+                if (isDupAdjacent) {
+                    utility += 12000;
+                } else {
+                    if (aiSeq >= 4) utility += 20000;
+                    else utility += 10000 + (aiSeq * 1000);
+                }
+            }
+        }
 
         // Positional Geometry Fallback
         utility += evaluateGeometricExtension(board, move.x, move.y, currentPlayer, opponent, cols, rows);
@@ -1459,6 +1483,12 @@ function getProceduralMove(board, currentPlayer, rows, cols, difficulty = 'norma
             bestMove = move;
         }
     }
+
+    console.log(gameMode)
+    console.log(`AI evaluated ${validMoves.length} moves with behavior '${aiBehavior}' and difficulty '${difficulty}'. Best move: (${bestMove.x}, ${bestMove.y}) with utility ${highestUtility.toFixed(2)}.`);
+    console.log(`reasoning breakdown: currentScoreAI=${currentScoreAI}, currentScorePlayer=${currentScorePlayer}, isDefenseMode=${isDefenseMode}, isAttackMode=${isAttackMode}`);
+    if(gameMode === 'zone_control') console.log(`(zones) isMoveInZone=${board[bestMove.y][bestMove.x].isTarget}`);
+    if(gameMode === 'turf_war') console.log(`(turf_war) isDupAdjacent=${board[bestMove.y][bestMove.x].type === 'dup' || board[bestMove.y][bestMove.x].type === 'zapspace'}`);
 
     return bestMove;
 }
