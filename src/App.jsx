@@ -1879,7 +1879,7 @@ function countPoints(boardState, targetPlayer, rows, cols) {
                               </div>
                               { g.type !== 'fill_targets' && g.type !== 'clear_all' && (
                                  <div className="flex flex-col gap-1 w-full">
-                                   <input type="number" value={g.target} onChange={(e) => { let ng = [...currentGoals]; ng[i].target = Number(e.target.value); setCurrentGoals(ng); }} className="flex-1 bg-slate-800 text-white p-1.5 text-[10px] rounded border border-slate-600 outline-none" placeholder="Target Value" />
+                                   { g.type !== 'standard' && <input type="number" value={g.target} onChange={(e) => { let ng = [...currentGoals]; ng[i].target = Number(e.target.value); setCurrentGoals(ng); }} className="flex-1 bg-slate-800 text-white p-1.5 text-[10px] rounded border border-slate-600 outline-none" placeholder="Target Value" />}
                                    {g.type === 'max_moves' && (
                                      <select value={g.mode || 'fail'} onChange={(e) => { let ng = [...currentGoals]; ng[i].mode = e.target.value; setCurrentGoals(ng); }} className="w-full bg-slate-800 text-white text-[10px] p-1.5 rounded border border-slate-600 outline-none">
                                        <option value="fail">Fail on Limit</option>
