@@ -1,5 +1,29 @@
 import './index.css'
 import React, { useState, useEffect, useRef } from 'react';
+import { initializeApp } from "firebase/app";
+import { getFirestore } from "firebase/firestore";
+import { collection, doc, setDoc, getDoc, onSnapshot, addDoc } from 'firebase/firestore';
+
+// REPLACE THIS with your actual config from Firebase
+const firebaseConfig = {
+
+  apiKey: "AIzaSyD3ZQ5HQOKuGL7JAzEeeOM1YDcJWHeOlH0",
+
+  authDomain: "tic-tac-toe-2-4c9e8.firebaseapp.com",
+
+  projectId: "tic-tac-toe-2-4c9e8",
+
+  storageBucket: "tic-tac-toe-2-4c9e8.firebasestorage.app",
+
+  messagingSenderId: "398580270686",
+
+  appId: "1:398580270686:web:1a2924b5db52523dae16cf"
+
+};
+
+
+const app = initializeApp(firebaseConfig);
+export const db = getFirestore(app);
 
 // --- GAME CONFIGURATION ---
 const DEFAULT_COLS = 9;
@@ -95,9 +119,194 @@ const createEmptyBoard = (c, r) => Array(r).fill(null).map(() =>
     
 export default function App() {
   const [savedCampaigns, setSavedCampaigns] = useState([]);
+const rtcRef = useRef(null);
+const dcRef = useRef(null);
+const isHostRef = useRef(false); // Ref used inside event listeners
+const [isMultiplayer, setIsMultiplayer] = useState(false);
+const [isHost, setIsHost] = useState(false);
+const [pendingRemoteMove, setPendingRemoteMove] = useState(null);
+// --- NEW FIREBASE SIGNALING STATE ---
+const [lobbyCode, setLobbyCode] = useState('');
+const [joinCodeInput, setJoinCodeInput] = useState('');
+const [connectionStatus, setConnectionStatus] = useState('disconnected'); // 'disconnected', 'connecting', 'connected'
 
+// --- HOST LOGIC ---
+const startMultiplayerHost = async () => {
+  setIsHost(true);
+  isHostRef.current = true;
+  setIsMultiplayer(true);
+  setConnectionStatus('connecting');
+
+  const code = Math.random().toString(36).substring(2, 6).toUpperCase();
+  setLobbyCode(code);
+
+  const pc = new RTCPeerConnection({
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' }
+    ]
+  });
+  rtcRef.current = pc;
+
+  const dc = pc.createDataChannel('t3-game');
+  setupDataChannel(dc);
+
+  const gameDoc = doc(db, 'games', code);
+
+  // 1. Wait for ALL ICE candidates to finish gathering
+  pc.onicecandidate = async (e) => {
+    // When e.candidate is null, WebRTC is signaling that it has found all network paths!
+    if (!e.candidate) {
+      console.log("🟢 Host finished gathering ICE candidates. Writing Offer...");
+      await setDoc(gameDoc, {
+        // The localDescription.sdp now automatically contains all the ICE candidates!
+        offer: { type: pc.localDescription.type, sdp: pc.localDescription.sdp }
+      });
+    }
+  };
+
+  // 2. Create and set the offer (This triggers onicecandidate to start searching)
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+
+  // 3. Listen for the Joiner's final Answer package
+  onSnapshot(gameDoc, async (snapshot) => {
+    const data = snapshot.data();
+    if (!pc.currentRemoteDescription && data?.answer) {
+      console.log("🟢 Host received Joiner's Answer! Connecting...");
+      const answerDescription = new RTCSessionDescription(data.answer);
+      await pc.setRemoteDescription(answerDescription);
+    }
+  });
+};
+
+// --- JOINER LOGIC ---
+const joinMultiplayerGame = async (code) => {
+  if (!code) return alert("Please enter a Lobby Code!");
+  code = code.toUpperCase();
   
+  const gameDoc = doc(db, 'games', code);
+  const gameSnapshot = await getDoc(gameDoc);
+
+  if (!gameSnapshot.exists() || !gameSnapshot.data().offer) {
+    return alert("Lobby not ready or not found! Check the code.");
+  }
+
+  setIsHost(false);
+  isHostRef.current = false;
+  setIsMultiplayer(true);
+  setConnectionStatus('connecting');
+  setLobbyCode(code);
+
+  const pc = new RTCPeerConnection({
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' }
+    ]
+  });
+  rtcRef.current = pc;
+
+  pc.ondatachannel = (e) => setupDataChannel(e.channel);
+
+  // 1. Wait for ALL ICE candidates to finish gathering
+  pc.onicecandidate = async (e) => {
+    // When e.candidate is null, gathering is done.
+    if (!e.candidate) {
+      console.log("🟢 Joiner finished gathering ICE candidates. Writing Answer...");
+      await setDoc(gameDoc, { 
+        answer: { type: pc.localDescription.type, sdp: pc.localDescription.sdp } 
+      }, { merge: true });
+    }
+  };
+
+  // 2. Read the Host's offer (which already contains their network paths)
+  const offer = gameSnapshot.data().offer;
+  await pc.setRemoteDescription(new RTCSessionDescription(offer));
+
+  // 3. Create our Answer (This triggers onicecandidate to start searching)
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+};
+
+// --- NATIVE WEBRTC LOGIC ---
+const setupDataChannel = (dc) => {
+  dcRef.current = dc;
   
+  dc.onopen = () => {
+  console.log("🟢 DATA CHANNEL OPEN!");
+  setConnectionStatus('connected');
+  
+  if (isHostRef.current) {
+    // Send the current level state to the Joiner
+    // This now includes goals, gameMode, and the specific board layout
+    dc.send(JSON.stringify({ 
+      type: 'SYNC_STATE', 
+      board: board, // Current board (could be from editor or a loaded JSON)
+      cols, 
+      rows, 
+      gameMode,
+      goals: currentGoals,
+      aiBehavior
+    }));
+    
+    // Reset game state for the match
+    setScores({X: 0, O: 0});
+    setGameOver(false);
+    setAppMode('local'); // Or a new 'multiplayer' mode if you prefer
+  }
+};
+
+const broadcastCustomLevel = () => {
+  if (isHost && dcRef.current?.readyState === 'open') {
+    dcRef.current.send(JSON.stringify({
+      type: 'SYNC_STATE',
+      board,
+      cols,
+      rows,
+      gameMode,
+      goals: currentGoals,
+      aiBehavior
+    }));
+    // Also reset local game state
+    setScores({X: 0, O: 0});
+    setDrawnLines([]);
+    setGameOver(false);
+  }
+};
+
+  dc.onmessage = (e) => {
+  const data = JSON.parse(e.data);
+  if (data.type === 'SYNC_STATE') {
+    // Reconstruct the Host's custom level
+    setBoard(data.board);
+    setCols(data.cols);
+    setRows(data.rows);
+    setGameMode(data.gameMode);
+    setCurrentGoals(data.goals || [{ type: 'standard', target: 0 }]);
+    setAiBehavior(data.aiBehavior || 'standard');
+    
+    // Reset Joiner's local scores/state
+    setScores({X: 0, O: 0});
+    setGameOver(false);
+    setAppMode('local'); 
+  } else if (data.type === 'MOVE') {
+    setPendingRemoteMove({ x: data.x, y: data.y, timestamp: Date.now() });
+  }
+};
+
+  dc.onclose = () => {
+    alert("Opponent disconnected!");
+    resetToTitle();
+  };
+};
+
+
+useEffect(() => {
+  if (pendingRemoteMove) {
+    resolveTurn(pendingRemoteMove.x, pendingRemoteMove.y, true);
+  }
+}, [pendingRemoteMove]);
+
   useEffect(() => {
     const stored = localStorage.getItem('t3_campaigns');
     if (stored) {
@@ -166,7 +375,7 @@ export default function App() {
     // Level unlocks for campaign
     const [unlockedLevels, setUnlockedLevels] = useState([0]); // Always unlock first level by default
   // App Navigation State
-  const [appMode, setAppMode] = useState('title'); // title, local_setup, local, solo_setup, solo, campaign_select, campaign, editor
+  const [appMode, setAppMode] = useState('title'); // title, local_setup, local, solo_setup, solo, campaign_select, campaign, editor, multiplayer_setup
   const [gameMode, setGameMode] = useState('standard'); // standard, zone_control, corruption, turf_wars, pulse_blitz, cascade, mirror_protocol
   const [pulseTime, setPulseTime] = useState(100); // Percentage 0-100
   const pulseInterval = 3000; // 3 seconds per turn in Blitz, pulse_blitz, cascade, mirror_protocol
@@ -370,6 +579,8 @@ export default function App() {
   const lastMouse = useRef({ x: 0, y: 0 });
   const canvasRef = useRef(null);
 
+  
+
   useEffect(() => {
     fetch('./default.json')
       .then(res => res.json())
@@ -531,7 +742,17 @@ export default function App() {
   };
 
   // --- CORE LOGIC ENGINE ---
-  const resolveTurn = (startX, startY) => {
+  const resolveTurn = (startX, startY, isRemoteMove = false) => {
+    if (isMultiplayer && !isRemoteMove) {
+      if ((isHost && currentPlayer === 'O') || (!isHost && currentPlayer === 'X')) {
+        return; // Ignore clicks if it's the other person's turn
+      }
+      
+      // Send the move to the other player via Native DataChannel
+      if (dcRef.current && dcRef.current.readyState === 'open') {
+        dcRef.current.send(JSON.stringify({ type: 'MOVE', x: startX, y: startY }));
+      }
+    }
      const applyGravity = (b) => {
         let newBoard = JSON.parse(JSON.stringify(b));
         let changed = true;
@@ -1123,6 +1344,7 @@ export default function App() {
     r.readAsText(file);
     e.target.value = null;
   };
+  
 
   // --- RENDERERS ---
   if (appMode === 'title') {
@@ -1146,8 +1368,8 @@ export default function App() {
           <button onClick={() => { setAppMode('editor'); setBoard(createEmptyBoard(DEFAULT_COLS, DEFAULT_ROWS)); }} className="p-4 bg-amber-600/20 hover:bg-amber-600/40 text-amber-300 font-bold rounded-xl border border-amber-500/50 transition-all hover:scale-105">
             LEVEL / CAMPAIGN EDITOR
           </button>
-          <button onClick={() => alert('Network functionality coming soon!')} className="p-4 bg-slate-900 text-slate-600 font-bold rounded-xl border border-slate-800 cursor-not-allowed">
-            PLAY ONLINE (Soon)
+          <button onClick={() => setAppMode('multiplayer_setup')} className="p-4 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl border border-slate-700 transition-all hover:scale-105">
+            PLAY ONLINE 
           </button>
           <button onClick={initDebugLevel} className="mt-4 p-2 bg-rose-900/20 text-rose-500 font-bold rounded-xl border border-rose-900/50 transition-all hover:bg-rose-900/40 text-sm">
             [DEV] SPAWN DEBUG LEVEL
@@ -1156,6 +1378,8 @@ export default function App() {
       </div>
     );
   }
+
+  
 
   // --- SETUP MENUS ---
   if (appMode === 'local_setup' || appMode === 'solo_setup') {
@@ -1504,7 +1728,9 @@ function countPoints(boardState, targetPlayer, rows, cols) {
       )}
 
       {/* HEADER */}
-      <div className="w-full flex flex-wrap justify-between items-center p-4 border-b border-slate-800 bg-slate-900/50 z-10 shrink-0">
+      
+
+            <div className="w-full flex flex-wrap justify-between items-center p-4 border-b border-slate-800 bg-slate-900/50 z-10 shrink-0">
         {gameMode === 'pulse_blitz' && (
           <div className="absolute top-0 left-0 w-full h-1 bg-slate-900 z-50">
             <div 
@@ -1583,6 +1809,7 @@ function countPoints(boardState, targetPlayer, rows, cols) {
         </div>
       )}
 
+      
         {appMode === 'campaign' && (
            <select 
              value={campaignIndex} 
@@ -1606,6 +1833,92 @@ function countPoints(boardState, targetPlayer, rows, cols) {
           )}
         </div>
       </div>
+
+   {appMode === 'multiplayer_setup' && (
+  <div className="flex flex-col items-center justify-center h-full space-y-8 relative z-10 w-full p-8 max-w-xl mx-auto">
+    <h2 className="text-3xl font-black text-white tracking-widest">MULTIPLAYER LOBBY</h2>
+
+    <div className="w-full bg-slate-900 border border-slate-800 p-8 rounded-2xl shadow-2xl flex flex-col gap-8">
+      
+      {!lobbyCode && !isHost ? (
+        <div className="flex flex-col gap-4">
+          <button
+            onClick={startMultiplayerHost}
+            className="w-full py-4 bg-cyan-600 hover:bg-cyan-500 text-white font-black rounded-xl text-xl tracking-wider transition-all shadow-[0_0_15px_rgba(8,145,178,0.5)]"
+          >
+            CREATE LOBBY
+          </button>
+
+          {/* NEW: Upload Level Button */}
+          <label className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded-xl border border-slate-700 text-center cursor-pointer transition-all text-sm uppercase tracking-widest">
+            📂 Load Custom Level First
+            <input 
+              type="file" 
+              accept=".json" 
+              className="hidden" 
+              onChange={(e) => handleLevelImport(e, (d) => {
+                setBoard(d.board);
+                setCols(d.cols || d.gridSize);
+                setRows(d.rows || d.gridSize);
+                setGameMode(d.gameMode || 'standard');
+                setCurrentGoals(d.goals || [d.goal]);
+                alert("Level Loaded! Now create a lobby to play it.");
+              })} 
+            />
+          </label>
+
+          <div className="relative flex items-center justify-center my-4">
+            <div className="border-t border-slate-800 w-full"></div>
+            <span className="bg-slate-900 px-4 text-xs font-bold text-slate-500 absolute tracking-widest">OR JOIN LOBBY</span>
+          </div>
+
+          <div className="flex gap-2">
+            <input
+              type="text"
+              placeholder="CODE"
+              maxLength={4}
+              value={joinCodeInput}
+              onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
+              className="flex-1 bg-slate-800 text-white font-black text-center text-xl p-4 rounded-xl border border-slate-700 outline-none uppercase"
+            />
+            <button
+              onClick={() => joinMultiplayerGame(joinCodeInput)}
+              className="px-8 bg-emerald-600 hover:bg-emerald-500 text-white font-black rounded-xl transition-all"
+            >
+              JOIN
+            </button>
+          </div>
+        </div>
+      ) : (
+        /* WAITING ROOM */
+        <div className="flex flex-col items-center text-center gap-6">
+          <p className="text-slate-400 font-bold uppercase tracking-widest text-sm">
+            {isHost ? "Your Lobby Code" : "Joining Lobby"}
+          </p>
+          <div className="text-6xl font-black text-cyan-400 tracking-widest bg-slate-950 py-4 px-12 rounded-2xl border border-cyan-900/50 shadow-[inset_0_0_20px_rgba(8,145,178,0.2)]">
+            {lobbyCode}
+          </div>
+          <p className="text-amber-400 animate-pulse font-bold mt-4">
+            {isHost ? "Waiting for player 2..." : "Connecting..."}
+          </p>
+          <button
+            onClick={() => {
+              setLobbyCode('');
+              setIsHost(false);
+              setIsMultiplayer(false);
+              setConnectionStatus('disconnected');
+              resetToTitle(); 
+            }}
+            className="text-xs text-slate-500 hover:text-rose-400 font-bold mt-4 transition-colors"
+          >
+            CANCEL & LEAVE
+          </button>
+        </div>
+      )}
+    </div>
+  </div>
+)}
+           
 
       <div className="flex flex-1 overflow-hidden relative">
         
