@@ -3118,29 +3118,38 @@ export default function App() {
                     </button>
                     <button
                       onClick={() => {
+                        const levelData = {
+                          name:
+                            campaign[selectedLevelIndex]?.name ||
+                            `Level ${campaign.length + 1}`,
+                          gameMode,
+                          cols,
+                          rows,
+                          board,
+                          dialogs,
+                          goals: currentGoals,
+                          aiBehavior,
+                        };
+
                         if (
                           selectedLevelIndex >= 0 &&
                           selectedLevelIndex < campaign.length
                         ) {
+                          // Update existing
                           const newCampaign = [...campaign];
-                          newCampaign[selectedLevelIndex] = {
-                            name: campaign[selectedLevelIndex].name,
-                            gameMode,
-                            cols,
-                            rows,
-                            board,
-                            dialogs,
-                            goals: currentGoals,
-                            aiBehavior,
-                          };
+                          newCampaign[selectedLevelIndex] = levelData;
                           setCampaign(newCampaign);
+                        } else {
+                          // Add as new first level/append
+                          setCampaign([...campaign, levelData]);
+                          setSelectedLevelIndex(campaign.length);
                         }
                       }}
-                      disabled={selectedLevelIndex < 0}
-                      className="flex-1 py-2 bg-emerald-500/20 text-emerald-400 rounded text-[10px] font-bold border border-emerald-500/50 hover:bg-emerald-500/40 disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="flex-1 py-2 bg-emerald-500/20 text-emerald-400 rounded text-[10px] font-bold border border-emerald-500/50 hover:bg-emerald-500/40"
                     >
-                      SAVE LEVEL{" "}
-                      {selectedLevelIndex >= 0 ? selectedLevelIndex + 1 : "?"}
+                      {selectedLevelIndex >= 0
+                        ? `SAVE LEVEL ${selectedLevelIndex + 1}`
+                        : "SAVE AS NEW LEVEL"}
                     </button>
                   </div>
                   <div className="flex-1 overflow-y-auto space-y-1.5 bg-slate-950 p-2 rounded border border-slate-800 min-h-[100px]">
