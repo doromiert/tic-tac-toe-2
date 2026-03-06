@@ -96,6 +96,8 @@ const createEmptyBoard = (c, r) => Array(r).fill(null).map(() =>
 export default function App() {
   const [savedCampaigns, setSavedCampaigns] = useState([]);
 
+  
+  
   useEffect(() => {
     const stored = localStorage.getItem('t3_campaigns');
     if (stored) {
@@ -164,7 +166,9 @@ export default function App() {
     const [unlockedLevels, setUnlockedLevels] = useState([0]); // Always unlock first level by default
   // App Navigation State
   const [appMode, setAppMode] = useState('title'); // title, local_setup, local, solo_setup, solo, campaign_select, campaign, editor
-  const [gameMode, setGameMode] = useState('standard'); // standard, zone_control, corruption, turf_wars
+  const [gameMode, setGameMode] = useState('standard'); // standard, zone_control, corruption, turf_wars, pulse_blitz, cascade, mirror_protocol
+  const [pulseTime, setPulseTime] = useState(100); // Percentage 0-100
+  const pulseInterval = 3000; // 3 seconds per turn in Blitz, pulse_blitz, cascade, mirror_protocol
   const [isPlaytesting, setIsPlaytesting] = useState(false);
   const [backupState, setBackupState] = useState(null);
   
@@ -194,6 +198,26 @@ export default function App() {
   const [dialogs, setDialogs] = useState([]);
   const [showDialog, setShowDialog] = useState(false);
   const [dialogIndex, setDialogIndex] = useState(0);
+
+  useEffect(() => {
+    if (gameMode !== 'pulse_blitz' || gameOver || currentPlayer === null || (!['local', 'solo', 'campaign'].includes(appMode) && !isPlaytesting)) return;
+
+    setPulseTime(100);
+    const step = 100; // ms
+    const decrement = (step / pulseInterval) * 100;
+
+    const timer = setInterval(() => {
+      setPulseTime(prev => {
+        if (prev <= 0) {
+            setCurrentPlayer(currentPlayer === 'X' ? 'O' : 'X');
+          return 100;
+        }
+        return prev - decrement;
+      });
+    }, step);
+
+    return () => clearInterval(timer);
+  }, [gameMode, currentPlayer, gameOver, isPlaytesting, appMode]);
 
   const skipDialog = () => {
       setShowDialog(false);
@@ -507,10 +531,54 @@ export default function App() {
 
   // --- CORE LOGIC ENGINE ---
   const resolveTurn = (startX, startY) => {
+     const applyGravity = (b) => {
+        let newBoard = JSON.parse(JSON.stringify(b));
+        let changed = true;
+        while (changed) {
+            changed = false;
+            for (let x = 0; x < cols; x++) {
+                for (let y = rows - 2; y >= 0; y--) {
+                    const current = newBoard[y][x];
+                    const below = newBoard[y + 1][x];
+                    
+                    if (current.piece && !current.mechanicalLock && current.type !== 'locked_mech') {
+                        if (!below.piece && below.type !== 'void' && !below.mechanicalLock && below.type !== 'locked_mech' && below.type !== 'locked_letter') {
+                            below.piece = current.piece;
+                            below.rotation = current.rotation;
+                            current.piece = null;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        return newBoard;
+    };
+    
     let matchOver = false;
     let wMsg = '';
     let b = JSON.parse(JSON.stringify(board));
     let q = [{ x: startX, y: startY, piece: currentPlayer, overwrite: false }];
+    
+    if (gameMode === 'mirror_protocol') {
+        let mx = cols - 1 - startX;
+        if (mx >= 0 && mx < cols) {
+            let mCell = b[startY][mx];
+            if (!mCell.piece && !mCell.mechanicalLock && mCell.type !== 'void' && mCell.type !== 'locked_mech' && mCell.type !== 'locked_letter') {
+                q.push({ x: mx, y: startY, piece: currentPlayer, overwrite: false });
+            }
+        }
+    }
+    if (gameMode === 'mirror_protocol') {
+        let mx = cols - 1 - startX;
+        if (mx >= 0 && mx < cols) {
+            let mCell = b[startY][mx];
+            if (!mCell.piece && !mCell.mechanicalLock && mCell.type !== 'void' && mCell.type !== 'locked_mech' && mCell.type !== 'locked_letter') {
+                q.push({ x: mx, y: startY, piece: currentPlayer, overwrite: false });
+            }
+        }
+    }
+    
     let linesToErase = new Set();
     let maxComboThisTurn = 0;
         // Step 2: End level if no moves left (after matchOver/wMsg are set)
@@ -539,8 +607,11 @@ export default function App() {
             wMsg = wMsg || 'No more moves!';
           }
         }
+
+        
     
     const processReactions = (queue) => {
+        
       let iters = 0;
       while (queue.length > 0 && iters < MAX_ITERATIONS) {
         iters++;
@@ -722,6 +793,9 @@ export default function App() {
 
     let earnedExtraTurns = 0;
     let linesFound = [];
+    if (gameMode === 'cascade') {
+        b = applyGravity(b);
+    }
 
     const checkLine = (startX, startY, dx, dy) => {
       let run = [];
@@ -853,7 +927,7 @@ export default function App() {
     }
     if (foundValidMove) isFull = false;
 
-    setBoard(b);
+        setBoard(b);
     setScores(tempScores);
     setDrawnLines(tempDrawnLines);
 
@@ -913,7 +987,6 @@ export default function App() {
       setTimeout(() => setFailState?.(failState), 0);
     }
 
-    setGameOver(matchOver);
     setGameOver(matchOver);
     if (matchOver) setWinMessage(wMsg);
 
@@ -1149,349 +1222,134 @@ export default function App() {
  * Procedural AI Evaluator (V2)
  * Features GOAP JSON integration, difficulty scaling, and behavioral stances.
  */
-function getProceduralMove(board, currentPlayer, rows, cols, difficulty = 'normal', aiBehavior = 'standard', gameMode = 'standard') {
-    const opponent = currentPlayer === 'X' ? 'O' : 'X';
-    
-    // 1. Identify valid actionable tiles
-    const validMoves = [];
+const getProceduralMove = (board, aiPiece, rows, cols, difficulty, aiBehavior, gameMode) => {
+    let validMoves = [];
     for (let y = 0; y < rows; y++) {
         for (let x = 0; x < cols; x++) {
             const cell = board[y][x];
-            if (cell.type !== 'void' && cell.type !== 'locked_mech' && !cell.mechanicalLock && !cell.piece) {
+            if (
+                cell.type !== 'void' &&
+                cell.type !== 'locked_mech' &&
+                !cell.mechanicalLock &&
+                cell.type !== 'dup' &&
+                cell.type !== 'zapspace' &&
+                cell.type !== 'locked_letter' &&
+                !cell.piece
+            ) {
                 validMoves.push({ x, y });
             }
         }
     }
-    function simulateTurn(currentBoard, targetX, targetY, player) {
-    let b = JSON.parse(JSON.stringify(currentBoard));
-    let rows = b.length;
-    let cols = b[0].length;
-    
-    let q = [{ x: targetX, y: targetY, piece: player, overwrite: false }];
-    let linesToErase = new Set();
-
-    // --- PHASE 1: ZAPS, DUPS, FLIPS, SWITCHES ---
-    const processReactions = (queue) => {
-        let iters = 0;
-        while (queue.length > 0 && iters < MAX_ITERATIONS) {
-            iters++;
-            let { x, y, piece, overwrite } = queue.shift();
-            if (y < 0 || y >= rows || x < 0 || x >= cols) continue;
-            if (b[y][x].type === 'void') continue;
-
-            let cx = x, cy = y;
-            
-            if (b[cy][cx].type === 'zap') {
-                while (true) {
-                    let dir = b[cy][cx].dir;
-                    let nx = cx + (dir === 'r' ? 1 : dir === 'l' ? -1 : 0);
-                    let ny = cy + (dir === 'd' ? 1 : dir === 'u' ? -1 : 0);
-                    if (ny < 0 || ny >= rows || nx < 0 || nx >= cols) break;
-                    if (b[ny][nx].type === 'void') break;
-                    
-                    let blocked = false;
-                    if (dir === 'r' && b[cy][cx].walls.r) blocked = true;
-                    if (dir === 'l' && b[ny][nx].walls.r) blocked = true;
-                    if (dir === 'd' && b[cy][cx].walls.b) blocked = true;
-                    if (dir === 'u' && b[ny][nx].walls.b) blocked = true;
-                    
-                    let nextCell = b[ny][nx];
-                    if (blocked || (nextCell.type === 'locked_letter' && !nextCell.unlocked) || nextCell.piece) break;
-                    
-                    cx = nx; cy = ny;
-                    if (nextCell.type !== 'zap') break; 
-                }
-            }
-
-            let cell = b[cy][cx];
-            if (cell.type === 'locked_letter' && !cell.unlocked) continue;
-            if (cell.type === 'dup' || cell.type === 'zapspace' || cell.type === 'void') continue;
-            if (cell.piece && !overwrite) continue;
-
-            if (cell.piece && cell.dead && overwrite && cell.lineId) {
-                linesToErase.add(cell.lineId);
-            }
-
-            if (cell.type === 'flip') piece = (piece === 'X' ? 'O' : 'X');
-
-            cell.piece = piece;
-            cell.dead = false;
-            cell.lineId = null;
-
-            if (cell.type === 'switch') {
-                b.forEach(r => r.forEach(c => {
-                    if (c.type === 'locked_letter' && c.letter === cell.letter) c.unlocked = true;
-                }));
-            }
-
-            const checkDup = (dx, dy, targetDir, pushX, pushY) => {
-                let neighbor = b[cy + dy]?.[cx + dx];
-                if (neighbor?.type === 'dup' && neighbor.dir === targetDir) {
-                    queue.push({ x: cx + pushX, y: cy + pushY, piece, overwrite: true });
-                }
-            };
-            checkDup(1, 0, 'r', 2, 0);   
-            checkDup(-1, 0, 'l', -2, 0);
-            checkDup(0, 1, 'd', 0, 2);
-            checkDup(0, -1, 'u', 0, -2);
-        }
-    };
-
-    processReactions(q);
-
-    // --- PHASE 2: MOVERS AND ROTATORS ---
-    let moverQueue = [];
-    b.forEach((row, y) => {
-        row.forEach((cell, x) => {
-            if (cell.type === 'mov' && cell.piece && !cell.dead) {
-                let nx = x + (cell.dir === 'r' ? 1 : cell.dir === 'l' ? -1 : 0);
-                let ny = y + (cell.dir === 'd' ? 1 : cell.dir === 'u' ? -1 : 0);
-                let blocked = false;
-                
-                if (cell.dir === 'r' && cell.walls.r) blocked = true;
-                if (cell.dir === 'l' && nx >= 0 && b[ny][nx].walls.r) blocked = true;
-                if (cell.dir === 'd' && cell.walls.b) blocked = true;
-                if (cell.dir === 'u' && ny >= 0 && b[ny][nx].walls.b) blocked = true;
-                
-                if (!blocked && nx >= 0 && nx < cols && ny >= 0 && ny < rows && b[ny][nx].type === 'mov') {
-                    let nextMov = b[ny][nx];
-                    let nnx = nx + (nextMov.dir === 'r' ? 1 : nextMov.dir === 'l' ? -1 : 0);
-                    let nny = ny + (nextMov.dir === 'd' ? 1 : nextMov.dir === 'u' ? -1 : 0);
-                    let nextBlocked = false;
-                    
-                    if (nextMov.dir === 'r' && nextMov.walls.r) nextBlocked = true;
-                    if (nextMov.dir === 'l' && nnx >= 0 && b[nny][nnx].walls.r) nextBlocked = true;
-                    if (nextMov.dir === 'd' && nextMov.walls.b) nextBlocked = true;
-                    if (nextMov.dir === 'u' && nny >= 0 && b[nny][nnx].walls.b) nextBlocked = true;
-                    
-                    if (nextBlocked || nnx < 0 || nnx >= cols || nny < 0 || nny >= rows || b[nny][nnx].type === 'void') {
-                        blocked = true;
-                    }
-                }
-                
-                if (!blocked && nx >= 0 && nx < cols && ny >= 0 && ny < rows && b[ny][nx].type !== 'void') {
-                    moverQueue.push({from: {x,y}, to: {x:nx, y:ny}, piece: cell.piece, rotation: cell.rotation || 0, isRot: false});
-                }
-            }
-            if ((cell.type === 'rot_cw' || cell.type === 'rot_ccw') && !cell.dead) {
-                let isCW = cell.type === 'rot_cw';
-                const orthogonalDirs = [[0,-1], [1,0], [0,1], [-1,0]]; 
-                
-                orthogonalDirs.forEach(([dx, dy]) => {
-                    let px = x + dx, py = y + dy;
-                    if (px >= 0 && px < cols && py >= 0 && py < rows && b[py][px].type !== 'void') {
-                        let pCell = b[py][px];
-                        if (pCell.piece && !pCell.dead) {
-                            let nx = x + (isCW ? -dy : dy);
-                            let ny = y + (isCW ? dx : -dx);
-                            if (nx >= 0 && nx < cols && ny >= 0 && ny < rows && b[ny][nx].type !== 'void') {
-                                let t = b[ny][nx];
-                                if (!t.piece && !t.type.startsWith('locked') && t.type !== 'dup' && t.type !== 'zapspace') {
-                                    moverQueue.push({from: {x:px, y:py}, to: {x:nx, y:ny}, piece: pCell.piece, rotation: pCell.rotation || 0, isRot: true, isCW});
-                                }
-                            }
-                        }
-                    }
-                });
-            }
-        });
-    });
-
-    moverQueue.forEach(m => b[m.from.y][m.from.x].piece = null); 
-    
-    let newQueue = [];
-    moverQueue.forEach(m => {
-        let target = b[m.to.y][m.to.x];
-        if (!target.piece && !target.type.startsWith('locked') && target.type !== 'dup' && target.type !== 'zapspace' && target.type !== 'void') {
-            target.piece = m.piece;
-            target.rotation = m.isRot ? m.rotation + (m.isCW ? 90 : -90) : m.rotation;
-            newQueue.push({x: m.to.x, y: m.to.y, piece: m.piece, overwrite: false});
-        } else {
-            b[m.from.y][m.from.x].piece = m.piece; 
-            b[m.from.y][m.from.x].rotation = m.rotation;
-        }
-    });
-
-    if (newQueue.length > 0) processReactions(newQueue);
-
-    // --- PHASE 3: LINE REVIVALS ---
-    if (linesToErase.size > 0) {
-        linesToErase.forEach(id => {
-            b.forEach(row => row.forEach(c => {
-                if (c.lineId === id) {
-                    c.dead = false;
-                    c.lineId = null;
-                }
-            }));
-        });
-    }
-
-    return b;
-}
 
     if (validMoves.length === 0) return null;
 
-    // 2. Difficulty Scaling (Random Chance Override)
-    const difficultyScales = { drunk: 1.0, easy: 0.35, normal: 0.15, hard: 0.0 };
-    const randomChance = difficultyScales[difficulty] || 0.15;
-    
-    if (Math.random() < randomChance) {
-        return validMoves[Math.floor(Math.random() * validMoves.length)];
-    }
+    // Pulse Blitz hesitation mechanic
+    if (gameMode === 'pulse_blitz' && Math.random() < 0.2) return null;
 
     let bestMove = null;
     let highestUtility = -Infinity;
+    const opponentPiece = aiPiece === 'X' ? 'O' : 'X';
 
-    // 3. Stance Evaluation (Attack vs Defense thresholding)
-    const currentScoreAI = countPoints(board, currentPlayer, rows, cols);
-    const currentScorePlayer = countPoints(board, opponent, rows, cols);
-    const avgScore = Math.max(1, (currentScoreAI + currentScorePlayer) / 2);
-    
-    let isDefenseMode = false;
-    let isAttackMode = false;
-
-    if (aiBehavior === 'standard') {
-        // "player score greater than AI's score by 50% of the average"
-        if (currentScorePlayer > currentScoreAI + (avgScore * 0.5)) {
-            isDefenseMode = true;
-        } else if (currentScorePlayer < currentScoreAI - (avgScore * 0.5)) {
-            // "player score lesser than AI's score by 50% of the average"
-            isAttackMode = true;
-        } else {
-            // "Score equal"
-            isAttackMode = true;
-        }
-    } else if (aiBehavior === 'defensive') {
-        isDefenseMode = true;
-    } else if (aiBehavior === 'aggressive') {
-        isAttackMode = true;
-    }
-
-    // Helper: Calculates immediate spatial connection length before chain reactions
-    const getSeqLength = (brd, tx, ty, playerColor) => {
-        let maxLen = 1;
-        const dirs = [ [1,0], [0,1], [1,1], [1,-1] ];
-        for (let [dx, dy] of dirs) {
-            let len = 1;
-            let cx = tx + dx, cy = ty + dy;
-            while (cx>=0 && cx<cols && cy>=0 && cy<rows && brd[cy][cx].piece === playerColor) { len++; cx+=dx; cy+=dy; }
-            cx = tx - dx; cy = ty - dy;
-            while (cx>=0 && cx<cols && cy>=0 && cy<rows && brd[cy][cx].piece === playerColor) { len++; cx-=dx; cy-=dy; }
-            if (len > maxLen) maxLen = len;
+    // --- NEW: Gravity Prediction for Cascade ---
+    const getGravityY = (startX, startY) => {
+        let finalY = startY;
+        while (finalY + 1 < rows) {
+            let below = board[finalY + 1][startX];
+            if (!below.piece && below.type !== 'void' && !below.mechanicalLock && below.type !== 'locked_mech' && below.type !== 'locked_letter') {
+                finalY++;
+            } else {
+                break;
+            }
         }
-        return maxLen;
+        return finalY;
     };
 
-    // 4. Evaluate Goals per move candidate
-    for (const move of validMoves) {
+    validMoves.forEach(move => {
         let utility = 0;
-        
-        // Pure-function variant of resolveTurn()
-        const simBoard = simulateTurn(board, move.x, move.y, currentPlayer);
-        const simOppBoard = simulateTurn(board, move.x, move.y, opponent);
+        let evaluatedPositions = [];
 
-        // Sequence lookaheads
-        const aiSeq = getSeqLength(board, move.x, move.y, currentPlayer);
-        const playerThreatSeq = getSeqLength(board, move.x, move.y, opponent);
+        // Determine final Y if gravity is active
+        let actualY = gameMode === 'cascade' ? getGravityY(move.x, move.y) : move.y;
+        evaluatedPositions.push({ x: move.x, y: actualY });
 
-        // Score diffs after chain reactions resolve
-        const aiScoreGain = countPoints(simBoard, currentPlayer, rows, cols) - currentScoreAI;
-        const playerScoreBlocked = countPoints(simOppBoard, opponent, rows, cols) - currentScorePlayer;
+        // --- NEW: Mirror Prediction ---
+        if (gameMode === 'mirror_protocol') {
+            let mx = cols - 1 - move.x;
+            if (mx >= 0 && mx < cols && mx !== move.x) {
+                let mCell = board[move.y][mx]; // Check origin block
+                if (!mCell.piece && !mCell.mechanicalLock && mCell.type !== 'void' && mCell.type !== 'locked_mech' && mCell.type !== 'locked_letter') {
+                    let actualMirrorY = gameMode === 'cascade' ? getGravityY(mx, move.y) : move.y;
+                    evaluatedPositions.push({ x: mx, y: actualMirrorY });
+                }
+            }
+        }
 
-                // --- GOAP TREE: ACTION EVALUATION ---
-        const targetCell = board[move.y][move.x];
-        const isMoveInZone = targetCell.isTarget;
-        
-        let isDupAdjacent = false;
-        const orthogonalDirs = [[0,-1], [1,0], [0,1], [-1,0]];
-        orthogonalDirs.forEach(([dx, dy]) => {
-            let nx = move.x + dx, ny = move.y + dy;
-            if (nx >= 0 && nx < cols && ny >= 0 && ny < rows && board[ny][nx].type === 'dup') {
-                isDupAdjacent = true;
-            }
-        });
+        // --- TACTICAL EVALUATION ---
+        // Evaluate the utility of the resulting placement(s)
+        evaluatedPositions.forEach(pos => {
+            const { x, y } = pos;
+            const targetCell = board[y][x];
 
-        if (gameMode === 'standard') {
-            if (isDefenseMode) {
-                if (playerThreatSeq >= 2) {
-                    if (playerThreatSeq >= 3) {
-                        utility += 15000 + (playerScoreBlocked > 0 ? playerScoreBlocked * 10 : 0);
-                    } else {
-                        utility += 8000 + (playerScoreBlocked > 0 ? playerScoreBlocked * 5 : 0);
-                    }
-                } else {
-                    if (aiSeq >= 2) {
-                        utility += 5000 + (aiScoreGain > 0 ? aiScoreGain * 5 : 0);
-                    } else {
-                        utility += 1000 + (aiSeq * 100);
-                    }
-                }
-                if (aiBehavior === 'defensive' && utility === 0) utility += Math.random() * 50; 
-            }
-            if (isAttackMode) {
-                if (playerThreatSeq >= 3) {
-                    utility += 12000 + (playerScoreBlocked > 0 ? playerScoreBlocked * 10 : 0);
-                } else {
-                    if (aiSeq >= 4) {
-                        utility += 20000;
-                    } else {
-                        utility += 10000 + (aiSeq * 1000) + (aiScoreGain > 0 ? aiScoreGain * 5 : 0);
-                    }
-                }
-            }
-        } else if (gameMode === 'zone_control') {
-            if (isDefenseMode) {
-                if (playerThreatSeq >= 2 && isMoveInZone) {
-                    utility += 15000 + (playerScoreBlocked * 10);
-                } else {
-                    if (isMoveInZone) utility += 8000;
-                }
-            }
-            if (isAttackMode) {
-                if (isMoveInZone) {
-                    utility += 12000 + (aiSeq * 1000);
-                } else {
-                    utility += 5000 + (aiSeq * 500); 
-                }
-            }
-        } else if (gameMode === 'turf_war') {
-            if (isDefenseMode) {
-                if (isDupAdjacent) {
-                    utility += 15000 + (playerScoreBlocked * 10);
-                } else {
-                    if (aiSeq >= 2) utility += 5000 + (aiScoreGain * 5);
-                }
-            }
-            if (isAttackMode) {
-                if (isDupAdjacent) {
-                    utility += 12000;
-                } else {
-                    if (aiSeq >= 4) utility += 20000;
-                    else utility += 10000 + (aiSeq * 1000);
-                }
-            }
-        }
+            // 1. Positional / Center Control
+            const centerDistX = Math.abs(x - Math.floor(cols / 2));
+            const centerDistY = Math.abs(y - Math.floor(rows / 2));
+            utility += (cols - centerDistX) * 2;
+            utility += (rows - centerDistY) * 2;
 
-        // Positional Geometry Fallback
-        utility += evaluateGeometricExtension(board, move.x, move.y, currentPlayer, opponent, cols, rows);
+            // 2. Tile Interactions
+            if (['zap', 'mov', 'rot_cw', 'rot_ccw', 'flip'].includes(targetCell.type)) utility += 15;
+            if (targetCell.isTarget) utility += 50;
 
-        // Add a tiny bit of noise to prevent AI from looping identically on identical scores
-        utility += Math.random();
+            // 3. Line Checks (Win/Block Logic)
+            const checkLinePotential = (pieceToCheck) => {
+                let score = 0;
+                const dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
+                dirs.forEach(([dx, dy]) => {
+                    let count = 1; // Start with the hypothetical piece
+                    let openEnds = 0;
+
+                    // Forward check
+                    let cx = x + dx, cy = y + dy;
+                    while (cx >= 0 && cx < cols && cy >= 0 && cy < rows) {
+                        if (board[cy][cx].piece === pieceToCheck) count++;
+                        else if (!board[cy][cx].piece && board[cy][cx].type !== 'void') { openEnds++; break; }
+                        else break;
+                        cx += dx; cy += dy;
+                    }
+
+                    // Backward check
+                    cx = x - dx; cy = y - dy;
+                    while (cx >= 0 && cx < cols && cy >= 0 && cy < rows) {
+                        if (board[cy][cx].piece === pieceToCheck) count++;
+                        else if (!board[cy][cx].piece && board[cy][cx].type !== 'void') { openEnds++; break; }
+                        else break;
+                        cx -= dx; cy -= dy;
+                    }
+
+                    if (count >= 3) score += 10000; // Immediate win/block priority
+                    else if (count === 2 && openEnds > 0) score += 50; // Setup
+                });
+                return score;
+            };
+
+            // Apply weighting based on AI Persona
+            utility += checkLinePotential(aiPiece) * (aiBehavior === 'aggressive' ? 1.5 : 1);
+            utility += checkLinePotential(opponentPiece) * (aiBehavior === 'defensive' ? 1.5 : 1.2);
+        });
+
+        // 4. Difficulty Modifiers (Randomness)
+        if (difficulty === 'drunk') utility += Math.random() * 1000;
+        else if (difficulty === 'easy') utility += Math.random() * 200;
+        else if (difficulty === 'normal') utility += Math.random() * 40;
 
         if (utility > highestUtility) {
             highestUtility = utility;
-            bestMove = move;
+            bestMove = move; // Always return the selection coords, game handles physics
         }
-    }
-
-    console.log(gameMode)
-    console.log(`AI evaluated ${validMoves.length} moves with behavior '${aiBehavior}' and difficulty '${difficulty}'. Best move: (${bestMove.x}, ${bestMove.y}) with utility ${highestUtility.toFixed(2)}.`);
-    console.log(`reasoning breakdown: currentScoreAI=${currentScoreAI}, currentScorePlayer=${currentScorePlayer}, isDefenseMode=${isDefenseMode}, isAttackMode=${isAttackMode}`);
-    if(gameMode === 'zone_control') console.log(`(zones) isMoveInZone=${board[bestMove.y][bestMove.x].isTarget}`);
-    if(gameMode === 'turf_war') console.log(`(turf_war) isDupAdjacent=${board[bestMove.y][bestMove.x].type === 'dup' || board[bestMove.y][bestMove.x].type === 'zapspace'}`);
+    });
 
     return bestMove;
-}
+};
 
 /**
  * Maps the specific backwards constraint: 
@@ -1644,6 +1502,14 @@ function countPoints(boardState, targetPlayer, rows, cols) {
 
       {/* HEADER */}
       <div className="w-full flex flex-wrap justify-between items-center p-4 border-b border-slate-800 bg-slate-900/50 z-10 shrink-0">
+        {gameMode === 'pulse_blitz' && (
+          <div className="absolute top-0 left-0 w-full h-1 bg-slate-900 z-50">
+            <div 
+              className="h-full bg-cyan-500 transition-all duration-100 linear"
+              style={{ width: `${pulseTime}%` }}
+            />
+          </div>
+        )}
         <div className="flex items-center gap-4">
           <button onClick={resetToTitle} className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-xs font-bold rounded text-slate-400 transition-colors">&larr; BACK</button>
           <div>
@@ -1835,6 +1701,9 @@ function countPoints(boardState, targetPlayer, rows, cols) {
                       <option value="zone_control">Zone Control</option>
                       <option value="corruption">The Corruption</option>
                       <option value="turf_wars">Turf Wars</option>
+                      <option value="pulse_blitz">Pulse Blitz</option>
+                      <option value="cascade">Cascade</option>
+                      <option value="mirror_protocol">Mirror Protocol</option>
                     </select>
                   </div>
 
@@ -2275,6 +2144,9 @@ function countPoints(boardState, targetPlayer, rows, cols) {
     </div>
   );
 }
+
+
+
 
 
 
