@@ -683,6 +683,63 @@ export default function App() {
     aiBehavior,
   ]);
 
+  useEffect(() => {
+    const saved = localStorage.getItem("ttt2_campaign_autosave");
+    if (saved && appMode === "editor") {
+      setTimeout(() => {
+        if (
+          window.confirm(
+            "An autosaved campaign was found. Would you like to recover it?",
+          )
+        ) {
+          try {
+            setCampaign(JSON.parse(saved));
+            setSelectedLevelIndex(0);
+            loadLevel(JSON.parse(saved)[0]);
+          } catch (e) {
+            console.error("Autosave corrupted", e);
+          }
+        } else {
+          localStorage.removeItem("ttt2_campaign_autosave");
+        }
+      }, 500);
+    }
+  }, [appMode]);
+
+  useEffect(() => {
+    if (!campaign || campaign.length === 0) return;
+    console.log("Autosaving campaign state...");
+
+    const interval = setInterval(() => {
+      // 1. Sync current working level into the campaign array if a level is selected
+      if (selectedLevelIndex >= 0 && selectedLevelIndex < campaign.length) {
+        setCampaign((prev) => {
+          const updated = [...prev];
+          updated[selectedLevelIndex] = {
+            ...updated[selectedLevelIndex],
+            gameMode,
+            cols,
+            rows,
+            board,
+            dialogs,
+            goals: currentGoals,
+            aiBehavior,
+          };
+          return updated;
+        });
+      }
+
+      // 2. Persist the entire campaign state to localStorage
+      const currentState = JSON.stringify(campaign);
+      const lastSaved = localStorage.getItem("ttt2_campaign_autosave");
+      if (currentState !== lastSaved) {
+        localStorage.setItem("ttt2_campaign_autosave", currentState);
+      }
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [campaign, board, currentGoals, dialogs, gameMode, selectedLevelIndex]);
+
   const handleDragOver = (e) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
@@ -3031,30 +3088,34 @@ export default function App() {
               {editorTab === "campaign" && (
                 <div className="flex flex-col gap-3 flex-1 h-full">
                                    {" "}
+                  <input
+                    id="campaign-name-input"
+                    type="text"
+                    defaultValue="My Campaign"
+                    placeholder="Campaign Name"
+                    className="w-full py-1.5 px-2 mb-1 bg-slate-900 border border-slate-700 rounded text-xs text-slate-200 outline-none focus:border-indigo-500"
+                  />
                   <div className="flex gap-2">
-                                       {" "}
                     <button
-                      onClick={() =>
-                        setCampaign([
-                          ...campaign,
-                          {
-                            name: `Level ${campaign.length + 1}`,
-                            gameMode,
-                            cols,
-                            rows,
-                            board,
-                            dialogs,
-                            goals: currentGoals,
-                            aiBehavior,
-                          },
-                        ])
-                      }
+                      onClick={() => {
+                        const newLevel = {
+                          name: `Level ${campaign.length + 1}`,
+                          gameMode: "standard",
+                          cols: 9,
+                          rows: 9,
+                          board: createEmptyBoard(9, 9),
+                          dialogs: [],
+                          goals: [],
+                          aiBehavior: "random",
+                        };
+                        setCampaign([...campaign, newLevel]);
+                        setSelectedLevelIndex(campaign.length);
+                        loadLevel(newLevel);
+                      }}
                       className="flex-1 py-2 bg-indigo-500/20 text-indigo-300 rounded text-[10px] font-bold border border-indigo-500/50 hover:bg-indigo-500/40"
                     >
-                                            + APPEND BOARD TO CAMPAIGN          
-                               {" "}
+                      + NEW LEVEL
                     </button>
-                                       {" "}
                     <button
                       onClick={() => {
                         if (
@@ -3078,11 +3139,8 @@ export default function App() {
                       disabled={selectedLevelIndex < 0}
                       className="flex-1 py-2 bg-emerald-500/20 text-emerald-400 rounded text-[10px] font-bold border border-emerald-500/50 hover:bg-emerald-500/40 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      SAVE TO LEVEL{" "}
-                      {selectedLevelIndex >= 0
-                        ? campaign[selectedLevelIndex]?.name ||
-                          `Level ${selectedLevelIndex + 1}`
-                        : "?"}
+                      SAVE LEVEL{" "}
+                      {selectedLevelIndex >= 0 ? selectedLevelIndex + 1 : "?"}
                     </button>
                   </div>
                   <div className="flex-1 overflow-y-auto space-y-1.5 bg-slate-950 p-2 rounded border border-slate-800 min-h-[100px]">
@@ -3175,7 +3233,13 @@ export default function App() {
                   <div className="flex flex-col gap-2 mt-auto">
                                          
                     <button
-                      onClick={() => downloadJSON(campaign, "campaign.json")}
+                      onClick={() => {
+                        const cName =
+                          document
+                            .getElementById("campaign-name-input")
+                            ?.value.trim() || "campaign";
+                        downloadJSON(campaign, `${cName}.json`);
+                      }}
                       disabled={!campaign.length}
                       className="w-full py-1.5 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded text-[10px] font-bold disabled:opacity-50"
                     >
@@ -3207,14 +3271,45 @@ export default function App() {
                         type="file"
                         accept=".json"
                         className="hidden"
-                        onChange={(e) =>
+                        onChange={(e) => {
+                          const file = e.target.files[0];
+                          if (file) {
+                            const nameWithoutExt = file.name.replace(
+                              /\.json$/i,
+                              "",
+                            );
+                            const input = document.getElementById(
+                              "campaign-name-input",
+                            );
+                            if (input) input.value = nameWithoutExt;
+                          }
                           handleLevelImport(e, (d) => {
                             if (Array.isArray(d)) setCampaign(d);
                             else loadLevel(d);
-                          })
-                        }
+                          });
+                        }}
                       />
                     </label>
+                    <button
+                      onClick={() => {
+                        if (
+                          window.confirm(
+                            "Start a new campaign? Unsaved progress will be lost.",
+                          )
+                        ) {
+                          setCampaign([]);
+                          setSelectedLevelIndex(-1);
+                          localStorage.removeItem("ttt2_campaign_autosave");
+                          const input = document.getElementById(
+                            "campaign-name-input",
+                          );
+                          if (input) input.value = "My Campaign";
+                        }
+                      }}
+                      className="w-full py-1.5 bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded text-[10px] font-bold hover:bg-rose-500/30"
+                    >
+                      NEW CAMPAIGN
+                    </button>
                   </div>
                 </div>
               )}
