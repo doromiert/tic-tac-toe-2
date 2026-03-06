@@ -111,9 +111,8 @@ export default function App() {
           localStorage.setItem('t3_campaigns', JSON.stringify([defaultCamp]));
         })
         .catch(() => {
-          const fallback = { id: 'default', name: 'TUTORIAL', levels: DEFAULT_CAMPAIGN_FALLBACK };
-          setSavedCampaigns([fallback]);
-          localStorage.setItem('t3_campaigns', JSON.stringify([fallback]));
+          setSavedCampaigns([]);
+          localStorage.setItem('t3_campaigns', JSON.stringify([]));
         });
     }
   }, []);
@@ -143,12 +142,14 @@ export default function App() {
   };
 
   const loadCampaign = (id) => {
-    const selected = savedCampaigns.find(c => c.id === id);
+      const selected = savedCampaigns.find(c => c.id === id);
+      console.log(savedCampaigns, id, selected);
     if (selected) {
       setCampaign(selected.levels);
       setUnlockedLevels([0]); // Optional: Tie your hash-loading system here if needed
       setCampaignIndex(-1);
       setAppMode('campaign');
+      loadLevel(selected.levels[0]);
     }
   };
 
