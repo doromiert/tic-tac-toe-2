@@ -102,15 +102,16 @@ const simulateTurn = (
     let cx = x,
       cy = y;
 
+    // 1. ZAP SLIDING (Only for Zaps)
     if (b[cy][cx].type === "zap") {
-      let sX = cx,
-        sY = cy;
       while (true) {
         let dir = b[cy][cx].dir;
         let nx = cx + (dir === "r" ? 1 : dir === "l" ? -1 : 0);
         let ny = cy + (dir === "d" ? 1 : dir === "u" ? -1 : 0);
+
         if (ny < 0 || ny >= rows || nx < 0 || nx >= cols) break;
         let nextCell = b[ny][nx];
+
         let wallBlocked =
           (dir === "r" && b[cy][cx].walls.r) ||
           (dir === "l" && nextCell.walls.r) ||
@@ -130,15 +131,17 @@ const simulateTurn = (
           c.type === "void" ||
           (c.type === "locked_letter" && !c.unlocked) ||
           c.piece;
+
         if (wallBlocked || (isBlocker(nextCell) && !overwrite)) break;
+
         if (overwrite && nextCell.piece) {
-          trails.push({ x1: cx, y1: cy, x2: nx, y2: ny }); // Step recorded
+          trails.push({ x1: cx, y1: cy, x2: nx, y2: ny });
           cx = nx;
           cy = ny;
           break;
         }
 
-        trails.push({ x1: cx, y1: cy, x2: nx, y2: ny }); // Step recorded
+        trails.push({ x1: cx, y1: cy, x2: nx, y2: ny });
         cx = nx;
         cy = ny;
         if (nextCell.type !== "zap") break;
@@ -159,6 +162,7 @@ const simulateTurn = (
       c.type === "void" ||
       (c.type === "locked_letter" && !c.unlocked) ||
       c.piece;
+
     if (!overwrite && isBlockerFinal(cell)) continue;
     if (
       cell.type === "void" ||
@@ -186,7 +190,7 @@ const simulateTurn = (
     if (cell.type === "trash") continue;
 
     cell.piece = piece;
-    cell.isGhost = true; // Mark exactly which piece is the preview
+    cell.isGhost = true;
     if (cell.type === "switch") {
       b.forEach((r) =>
         r.forEach((c) => {
@@ -196,6 +200,96 @@ const simulateTurn = (
       );
     }
   }
+
+  // 2. MOVER PREDICTION (Checks if newly placed ghost pieces landed on a Mover)
+  let iteration = 0;
+  b.forEach((row, y) => {
+    row.forEach((cell, x) => {
+      if (iteration > 0) return;
+      // Only process movers that have a piece that wasn't there before
+      if (cell.type === "mov" && cell.piece && !currentBoard[y][x].piece) {
+        let dir = cell.dir;
+        let nx = x + (dir === "r" ? 1 : dir === "l" ? -1 : 0);
+        let ny = y + (dir === "d" ? 1 : dir === "u" ? -1 : 0);
+
+        let wallBlocked =
+          (dir === "r" && cell.walls.r) ||
+          (dir === "l" && nx >= 0 && nx < cols && b[ny][nx].walls.r) ||
+          (dir === "d" && cell.walls.b) ||
+          (dir === "u" && ny >= 0 && ny < rows && b[ny][nx].walls.b);
+
+        // Check if destination is valid for mover to push into
+        if (
+          !wallBlocked &&
+          nx >= 0 &&
+          nx < cols &&
+          ny >= 0 &&
+          ny < rows &&
+          !b[ny][nx].piece &&
+          !["void", "dup", "neutral", "rot_cw", "rot_ccw"].includes(
+            b[ny][nx].type,
+          ) &&
+          !(b[ny][nx].type === "locked_letter" && !b[ny][nx].unlocked)
+        ) {
+          // Add the 1-tile Mover trail
+          trails.push({ x1: x, y1: y, x2: nx, y2: ny });
+          iteration++;
+
+          let cx = nx;
+          let cy = ny;
+          let movedPiece = cell.piece;
+
+          // Clear origin
+          cell.piece = null;
+          cell.isGhost = false;
+
+          // If Mover pushed it onto a Zap, trace that zap too!
+          if (b[cy][cx].type === "zap") {
+            while (true) {
+              let zDir = b[cy][cx].dir;
+              let zx = cx + (zDir === "r" ? 1 : zDir === "l" ? -1 : 0);
+              let zy = cy + (zDir === "d" ? 1 : zDir === "u" ? -1 : 0);
+
+              if (zy < 0 || zy >= rows || zx < 0 || zx >= cols) break;
+              let nextCell = b[zy][zx];
+
+              let zWallBlocked =
+                (zDir === "r" && b[cy][cx].walls.r) ||
+                (zDir === "l" && nextCell.walls.r) ||
+                (zDir === "d" && b[cy][cx].walls.b) ||
+                (zDir === "u" && nextCell.walls.b);
+
+              const isZBlocker = (c) =>
+                [
+                  "dup",
+                  "rot_cw",
+                  "rot_ccw",
+                  "neutral",
+                  "trash",
+                  "flip",
+                  "switch",
+                ].includes(c.type) ||
+                c.type === "void" ||
+                (c.type === "locked_letter" && !c.unlocked) ||
+                c.piece;
+
+              if (zWallBlocked || isZBlocker(nextCell)) break;
+
+              trails.push({ x1: cx, y1: cy, x2: zx, y2: zy });
+              cx = zx;
+              cy = zy;
+              if (nextCell.type !== "zap") break;
+            }
+          }
+
+          // Land the final piece
+          b[cy][cx].piece = movedPiece;
+          b[cy][cx].isGhost = true;
+        }
+      }
+    });
+  });
+
   // Diff the board to find any new pieces and flag them as ghosts
   b.forEach((row, y) => {
     row.forEach((cell, x) => {
@@ -1113,21 +1207,6 @@ export default function App() {
         }
       }
     }
-    if (gameMode === "mirror_protocol") {
-      let mx = cols - 1 - startX;
-      if (mx >= 0 && mx < cols) {
-        let mCell = b[startY][mx];
-        if (
-          !mCell.piece &&
-          !mCell.mechanicalLock &&
-          mCell.type !== "void" &&
-          mCell.type !== "locked_mech" &&
-          mCell.type !== "locked_letter"
-        ) {
-          q.push({ x: mx, y: startY, piece: currentPlayer, overwrite: false });
-        }
-      }
-    }
 
     let linesToErase = new Set();
     let maxComboThisTurn = 0;
@@ -1216,10 +1295,13 @@ export default function App() {
 
             cx = nx;
             cy = ny;
+            b[cy][cx].anim = "move";
+            b[cy][cx].animId = Date.now() + Math.random();
             // Zaps only allow sliding if the current tile is a zap tile
             if (nextCell.type !== "zap") break;
           }
         }
+
         if (cx !== x || cy !== y) {
           if (b[y][x].piece === piece) {
             b[y][x].piece = null;
@@ -1805,6 +1887,13 @@ export default function App() {
   };
 
   const handleCellInteract = (x, y, e) => {
+    // Add this inside your cell hover/prediction function
+
+    if (e.type === "pointerdown") {
+      setGhostBoard(null);
+      setGhostTrails([]);
+    }
+
     if (isDragging.current) return; // Prevent painting while panning
     if (e.type === "pointerdown" && e.button !== 0) return; // Only left-click
     // Only restrict pointerenter if we are IN build mode. During gameplay, we want hover!
@@ -3931,21 +4020,32 @@ export default function App() {
                   )),
                 )}
 
-                {/* Ghost Trails - Made brighter and thicker so you can't miss them */}
-                {ghostTrails.map((trail, i) => (
-                  <line
-                    key={`trail-${i}`}
-                    x1={`${((trail.x1 + 0.5) * 100) / cols}%`}
-                    y1={`${((trail.y1 + 0.5) * 100) / rows}%`}
-                    x2={`${((trail.x2 + 0.5) * 100) / cols}%`}
-                    y2={`${((trail.y2 + 0.5) * 100) / rows}%`}
-                    stroke={PLAYER_COLORS[currentPlayer] || "#22d3ee"} // Updated this line!
-                    strokeWidth="6"
-                    strokeDasharray="8, 8"
+                {/* Ghost Trails - Continuous Smooth Path in Pixel Space */}
+                {ghostTrails.length > 0 && (
+                  <polyline
+                    fill="none"
+                    points={ghostTrails
+                      .map((t, i) => {
+                        // We use 60 because your container is defined as {cols * 60}px
+                        const x1 = (t.x1 + 0.5) * 60;
+                        const y1 = (t.y1 + 0.5) * 60;
+                        const x2 = (t.x2 + 0.5) * 60;
+                        const y2 = (t.y2 + 0.5) * 60;
+
+                        return i === 0
+                          ? `${x1},${y1} ${x2},${y2}`
+                          : `${x2},${y2}`;
+                      })
+                      .join(" ")}
+                    stroke={PLAYER_COLORS[currentPlayer] || "#22d3ee"}
+                    strokeWidth="4"
                     strokeLinecap="round"
+                    strokeLinejoin="round"
                     className="pointer-events-none animate-pulse opacity-80"
+                    style={{ transition: "stroke 0.2s ease" }}
                   />
-                ))}
+                )}
+
                 {/* Score Lines */}
                 {drawnLines.map((line) => (
                   <line
