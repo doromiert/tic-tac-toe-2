@@ -2047,6 +2047,59 @@ export default function App() {
     activePlayers = ["X", "O"],
   ) => {
     let finalPositions = [];
+    globalThis.aiMemories = globalThis.aiMemories || {};
+    if (!globalThis.aiMemories[aiPiece]) {
+      globalThis.aiMemories[aiPiece] = {
+        blockedCount: 0,
+        strategy: aiBehavior,
+        lastTargets: [],
+        playerAggression: 0,
+        playerComboTendency: 0,
+      };
+    }
+    const memory = globalThis.aiMemories[aiPiece];
+    const opponentsList = activePlayers.filter((p) => p !== aiPiece);
+
+    // Continuous On-The-Fly Player Profiling
+    let oppPieceCount = 0;
+    let oppCenterDistSum = 0;
+
+    // Analyze board state to dynamically adjust strategy this exact turn
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const cell = board[y][x];
+        if (cell.piece && opponentsList.includes(cell.piece)) {
+          oppPieceCount++;
+          oppCenterDistSum +=
+            Math.abs(x - Math.floor(cols / 2)) +
+            Math.abs(y - Math.floor(rows / 2));
+        }
+      }
+    }
+
+    // Determine if player plays centrally (aggressive/combo) or edges (defensive/scattered)
+    const avgOppDist = oppPieceCount > 0 ? oppCenterDistSum / oppPieceCount : 0;
+    memory.playerAggression = avgOppDist < cols / 4 ? 1.5 : 0.8;
+
+    // Detect if AI was blocked on its last moves
+    let recentBlocks = 0;
+    memory.lastTargets.forEach((target) => {
+      if (target.y < rows && target.x < cols) {
+        const cell = board[target.y][target.x];
+        if (cell.piece && opponentsList.includes(cell.piece)) {
+          recentBlocks++;
+        }
+      }
+    });
+
+    // Decay blocked count slowly (0.8 multiplier), add new blocks instantly
+    memory.blockedCount = memory.blockedCount * 0.8 + recentBlocks;
+
+    // Shift strategy continuously based on float thresholds
+    if (memory.blockedCount > 2.5) memory.strategy = "defensive_attrition";
+    else if (memory.playerAggression > 1.2) memory.strategy = "combo_baiting";
+    else memory.strategy = aiBehavior;
+
     let validMoves = [];
     for (let y = 0; y < rows; y++) {
       for (let x = 0; x < cols; x++) {
@@ -2170,6 +2223,7 @@ export default function App() {
         const checkLinePotential = (pieceToCheck) => {
           let score = 0;
           let activeThreats = 0;
+          let comboPotential = 0;
           const dirs = [
             [1, 0],
             [0, 1],
@@ -2204,41 +2258,152 @@ export default function App() {
               cy -= dy;
             }
 
-            if (count >= 3) {
-              score += 10000; // Lethal threat/win
-            } else if (count === 2 && openEnds > 0) {
-              score += 50;
-              if (openEnds === 2) score += 100; // Open-ended line priority
+            // Exponential threat scaling to strictly prioritize 4-combos
+            if (count >= 5) {
+              score += 5000000; // Unstoppable Win / Block Win
+            } else if (count === 4) {
+              score += 1000000; // Lethal 4-line
+              comboPotential += 2;
+            } else if (count === 3 && openEnds > 0) {
+              score += 100000; // Extremely dangerous open 3
               activeThreats++;
+              if (openEnds === 2) score += 150000; // Uncapped threat
+            } else if (count === 3 && openEnds === 0) {
+              score += 1000; // Dead 3-line
+            } else if (count === 2 && openEnds > 0) {
+              score += 500;
+              if (openEnds === 2) {
+                score += 2000;
+                activeThreats++;
+              }
             }
           });
 
-          // Multi-axis threat multiplier (Forking)
-          if (activeThreats >= 2) score += 3000;
+          // Multi-axis Combo & Fork Detection
+          if (activeThreats >= 2) score += 800000; // Simultaneous open lines (Fork)
+          if (comboPotential >= 1) score += 300000;
+
+          return score;
+
+          // Combo & Fork Resolution
+          if (activeThreats >= 2) {
+            score += 30000; // Simultaneous completions (Fork/Combo)
+          }
+          if (comboPotential >= 1) {
+            score += memory.strategy === "combo_baiting" ? 40000 : 10000;
+          }
 
           return score;
         };
 
+        let aggroMod = 1.0;
+        let defMod = 1.2;
+
+        // Continuous Strategy Application
+        if (memory.strategy === "combo_baiting") {
+          aggroMod = 0.8;
+          defMod = 1.5 * memory.playerAggression;
+        } else if (memory.strategy === "defensive_attrition") {
+          aggroMod = 0.4;
+          defMod = 4.0; // Absolute priority on blocking
+        } else if (memory.strategy === "aggressive") {
+          aggroMod = 1.8;
+          defMod = 1.0;
+        } else if (memory.strategy === "defensive") {
+          aggroMod = 0.8;
+          defMod = 2.0;
+        }
+
+        // Apply real-time threat multiplier based on rolling memory
+        defMod *= 1 + memory.blockedCount * 0.15;
+
         if (actualPiece === aiPiece) {
-          utility +=
-            checkLinePotential(aiPiece) *
-            (aiBehavior === "aggressive" ? 1.5 : 1);
+          utility += checkLinePotential(aiPiece) * aggroMod;
           opponents.forEach((opp) => {
-            utility +=
-              checkLinePotential(opp) *
-              (aiBehavior === "defensive" ? 1.5 : 1.2);
+            utility += checkLinePotential(opp) * defMod;
           });
+
+          // 3-Turn Combo Anticipation Heuristic
+          let futureComboUtility = 0;
+          const shadowDirs = [
+            [1, 0],
+            [0, 1],
+            [1, 1],
+            [1, -1],
+          ];
+          const originalPiece = targetCell.piece;
+          targetCell.piece = actualPiece; // Project move
+
+          shadowDirs.forEach(([dx, dy]) => {
+            [1, -1].forEach((dirMult) => {
+              let sx = x + dx * dirMult;
+              let sy = y + dy * dirMult;
+              let lineLength = 1;
+
+              // Traverse to the end of the newly projected line
+              while (
+                sx >= 0 &&
+                sx < cols &&
+                sy >= 0 &&
+                sy < rows &&
+                board[sy][sx].piece === actualPiece
+              ) {
+                sx += dx * dirMult;
+                sy += dy * dirMult;
+                lineLength++;
+              }
+
+              // Evaluate adjacent empty cells at the end of the projected line
+              if (
+                sx >= 0 &&
+                sx < cols &&
+                sy >= 0 &&
+                sy < rows &&
+                !board[sy][sx].piece &&
+                board[sy][sx].type !== "void"
+              ) {
+                let spaceAhead = 0;
+                let tx = sx + dx * dirMult;
+                let ty = sy + dy * dirMult;
+
+                // Calculate runway (how many consecutive empty spaces exist to complete the combo)
+                while (
+                  tx >= 0 &&
+                  tx < cols &&
+                  ty >= 0 &&
+                  ty < rows &&
+                  !board[ty][tx].piece &&
+                  board[ty][tx].type !== "void"
+                ) {
+                  spaceAhead++;
+                  tx += dx * dirMult;
+                  ty += dy * dirMult;
+                }
+
+                // Exponential reward for setting up guaranteed future combos
+                if (lineLength >= 2 && spaceAhead >= 2)
+                  futureComboUtility += 25000;
+                if (lineLength >= 3 && spaceAhead >= 1)
+                  futureComboUtility += 150000;
+                if (lineLength >= 4 && spaceAhead >= 1)
+                  futureComboUtility += 600000;
+              }
+            });
+          });
+
+          targetCell.piece = originalPiece; // Revert projection
+          utility += futureComboUtility * aggroMod;
 
           // Cascade vulnerability scan: Does this move create a stepping stone for the opponent?
           if (gameMode === "cascade" && y > 0) {
             let tempY = y;
-            y = y - 1; // Shift evaluation up one cell
+            y = y - 1;
             opponents.forEach((opp) => {
               if (checkLinePotential(opp) >= 10000) {
-                utility -= 15000; // Prevent suicidal placements
+                utility -= 35000; // Absolute veto for suicidal placements
               }
             });
-            y = tempY; // Restore state
+            y = tempY;
           }
         }
       });
@@ -2270,9 +2435,14 @@ export default function App() {
     });
     console.log("- Possible moves: ", validMoves);
 
+    // Update memory with the chosen vector for next turn's block analysis
+    if (bestMove) {
+      memory.lastTargets.push({ x: bestMove.x, y: bestMove.y });
+      if (memory.lastTargets.length > 3) memory.lastTargets.shift(); // Keep rolling window
+    }
+
     return bestMove;
   };
-
   // --- MAIN GAME UI ---
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-cyan-500/30 flex flex-col h-screen overflow-hidden select-none">
@@ -2427,30 +2597,43 @@ export default function App() {
           </select>
         )}
 
-        <div className="flex gap-4 sm:gap-6 font-mono bg-slate-950 p-2 rounded-lg border border-slate-800">
-          <div
-            className={`flex items-center gap-2 ${currentPlayer === "X" ? "text-cyan-400" : "text-slate-500"}`}
-          >
-            <span className="text-xl font-black">X</span>
-            <span className="text-xs">
-              {appMode === "solo" || appMode === "campaign" ? "YOU" : "P1"}:{" "}
-              <strong className="text-white text-base">{scores.X}</strong>
-            </span>
-          </div>
-                   {" "}
-          {(appMode === "local" ||
-            appMode === "editor" ||
-            ((appMode === "campaign" || appMode === "solo") &&
-              currentGoals.some((g) => g.type === "standard"))) && (
-            <div
-              className={`flex items-center gap-2 ${currentPlayer === "O" ? "text-rose-400" : "text-slate-500"}`}
-            >
-              <span className="text-xl font-black">O</span>
-              <span className="text-xs">
-                P2: <strong className="text-white text-base">{scores.O}</strong>
-              </span>
-            </div>
-          )}
+        <div className="flex gap-4 sm:gap-6 font-mono bg-slate-950 p-2 rounded-lg border border-slate-800 flex-wrap">
+          {activePlayers.map((player, index) => {
+            const colors = {
+              X: "text-cyan-400",
+              O: "text-rose-400",
+              S: "text-amber-400",
+              T: "text-emerald-400",
+            };
+            const isCurrent = currentPlayer === player;
+
+            return (
+              <div
+                key={player}
+                className={`flex items-center gap-2 transition-opacity ${isCurrent ? colors[player] || "text-white" : "text-slate-500 opacity-60"}`}
+              >
+                <img
+                  src={`/icons/${player}.svg`}
+                  alt={player}
+                  className="w-8 h-8 sm:w-[7] sm:h-[7] object-contain drop-shadow-md"
+                  style={{
+                    filter: isCurrent ? "none" : "grayscale(100%) opacity(70%)",
+                  }}
+                />
+                <span className="text-xs flex flex-col justify-center">
+                  <span>
+                    {player === "X" &&
+                    (appMode === "solo" || appMode === "campaign")
+                      ? "YOU"
+                      : `P${index + 1}`}
+                  </span>
+                  <strong className="text-white text-base leading-none">
+                    {scores[player] || 0}
+                  </strong>
+                </span>
+              </div>
+            );
+          })}
         </div>
       </div>
 
