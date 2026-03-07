@@ -28,6 +28,12 @@ export const db = getFirestore(app);
 const DEFAULT_COLS = 9;
 const DEFAULT_ROWS = 9;
 const MAX_ITERATIONS = 200;
+const PLAYER_COLORS = {
+  X: "#22d3ee",
+  O: "#fb7185",
+  T: "#34d399",
+  S: "#fbbf24",
+};
 // --- UTILS ---
 const generateId = () => Math.random().toString(36).substr(2, 9);
 const downloadJSON = (data, filename) => {
@@ -60,8 +66,151 @@ const createEmptyBoard = (c, r) =>
         })),
     );
 
+const simulateTurn = (
+  startX,
+  startY,
+  player,
+  currentBoard,
+  activePlayers,
+  cols,
+  rows,
+  gameMode,
+) => {
+  let b = JSON.parse(JSON.stringify(currentBoard));
+  let trails = [];
+  let q = [{ x: startX, y: startY, piece: player, overwrite: false }];
+
+  if (gameMode === "mirror_protocol") {
+    let mx = cols - 1 - startX;
+    if (mx >= 0 && mx < cols && mx !== startX) {
+      let mCell = b[startY][mx];
+      if (
+        !mCell.piece &&
+        !mCell.mechanicalLock &&
+        !["void", "locked_mech", "locked_letter"].includes(mCell.type)
+      ) {
+        q.push({ x: mx, y: startY, piece: player, overwrite: false });
+      }
+    }
+  }
+
+  let iters = 0;
+  while (q.length > 0 && iters < 100) {
+    iters++;
+    let { x, y, piece, overwrite } = q.shift();
+    if (y < 0 || y >= rows || x < 0 || x >= cols) continue;
+    let cx = x,
+      cy = y;
+
+    if (b[cy][cx].type === "zap") {
+      let sX = cx,
+        sY = cy;
+      while (true) {
+        let dir = b[cy][cx].dir;
+        let nx = cx + (dir === "r" ? 1 : dir === "l" ? -1 : 0);
+        let ny = cy + (dir === "d" ? 1 : dir === "u" ? -1 : 0);
+        if (ny < 0 || ny >= rows || nx < 0 || nx >= cols) break;
+        let nextCell = b[ny][nx];
+        let wallBlocked =
+          (dir === "r" && b[cy][cx].walls.r) ||
+          (dir === "l" && nextCell.walls.r) ||
+          (dir === "d" && b[cy][cx].walls.b) ||
+          (dir === "u" && nextCell.walls.b);
+
+        const isBlocker = (c) =>
+          [
+            "dup",
+            "rot_cw",
+            "rot_ccw",
+            "neutral",
+            "trash",
+            "flip",
+            "switch",
+          ].includes(c.type) ||
+          c.type === "void" ||
+          (c.type === "locked_letter" && !c.unlocked) ||
+          c.piece;
+        if (wallBlocked || (isBlocker(nextCell) && !overwrite)) break;
+        if (overwrite && nextCell.piece) {
+          trails.push({ x1: cx, y1: cy, x2: nx, y2: ny }); // Step recorded
+          cx = nx;
+          cy = ny;
+          break;
+        }
+
+        trails.push({ x1: cx, y1: cy, x2: nx, y2: ny }); // Step recorded
+        cx = nx;
+        cy = ny;
+        if (nextCell.type !== "zap") break;
+      }
+    }
+
+    let cell = b[cy][cx];
+    const isBlockerFinal = (c) =>
+      [
+        "dup",
+        "rot_cw",
+        "rot_ccw",
+        "neutral",
+        "trash",
+        "flip",
+        "switch",
+      ].includes(c.type) ||
+      c.type === "void" ||
+      (c.type === "locked_letter" && !c.unlocked) ||
+      c.piece;
+    if (!overwrite && isBlockerFinal(cell)) continue;
+    if (
+      cell.type === "void" ||
+      (cell.type === "locked_letter" && !cell.unlocked)
+    )
+      continue;
+    if (["dup", "rot_cw", "rot_ccw", "neutral"].includes(cell.type)) continue;
+
+    if (cell.flipMod || cell.type === "flip") {
+      let idx = activePlayers.indexOf(piece);
+      piece = activePlayers[(idx + 1) % activePlayers.length];
+    }
+
+    const checkDup = (dx, dy, targetDir, pushX, pushY) => {
+      let neighbor = b[cy + dy]?.[cx + dx];
+      if (neighbor?.type === "dup" && neighbor.dir === targetDir) {
+        q.push({ x: cx + pushX, y: cy + pushY, piece, overwrite: true });
+      }
+    };
+    checkDup(1, 0, "r", 2, 0);
+    checkDup(-1, 0, "l", -2, 0);
+    checkDup(0, 1, "d", 0, 2);
+    checkDup(0, -1, "u", 0, -2);
+
+    if (cell.type === "trash") continue;
+
+    cell.piece = piece;
+    cell.isGhost = true; // Mark exactly which piece is the preview
+    if (cell.type === "switch") {
+      b.forEach((r) =>
+        r.forEach((c) => {
+          if (c.type === "locked_letter" && c.letter === cell.letter)
+            c.unlocked = true;
+        }),
+      );
+    }
+  }
+  // Diff the board to find any new pieces and flag them as ghosts
+  b.forEach((row, y) => {
+    row.forEach((cell, x) => {
+      if (cell.piece && !currentBoard[y][x].piece) {
+        cell.isGhost = true;
+      }
+    });
+  });
+
+  return { board: b, trails };
+};
+
 export default function App() {
   const [savedCampaigns, setSavedCampaigns] = useState([]);
+  const [rotConfig, setRotConfig] = useState({ x: 50, y: 50, mult: 100 });
   const rtcRef = useRef(null);
   const dcRef = useRef(null);
   const isHostRef = useRef(false); // Ref used inside event listeners
@@ -351,6 +500,9 @@ export default function App() {
   const [backupState, setBackupState] = useState(null);
 
   const isBuildMode = appMode === "editor" && !isPlaytesting;
+
+  const [ghostBoard, setGhostBoard] = useState(null);
+  const [ghostTrails, setGhostTrails] = useState([]);
 
   // Grid & Board State
   const [cols, setCols] = useState(DEFAULT_COLS);
@@ -1016,7 +1168,6 @@ export default function App() {
           "rot_cw",
           "rot_ccw",
           "neutral",
-          "trash",
           "flip",
           "switch",
         ];
@@ -1069,6 +1220,11 @@ export default function App() {
             if (nextCell.type !== "zap") break;
           }
         }
+        if (cx !== x || cy !== y) {
+          if (b[y][x].piece === piece) {
+            b[y][x].piece = null;
+          }
+        }
 
         let cell = b[cy][cx];
 
@@ -1116,6 +1272,8 @@ export default function App() {
         }
 
         cell.piece = piece;
+        cell.anim = overwrite ? "dup" : "place";
+        cell.animId = Date.now() + Math.random();
         if (rotation !== undefined) cell.rotation = rotation;
         cell.dead = false;
         cell.lineId = null;
@@ -1138,9 +1296,8 @@ export default function App() {
 
     let machineChanged = true;
     let machineIters = 0;
-    const MAX_MACHINE_ITERS = 10;
-
-    while (machineChanged && machineIters < MAX_MACHINE_ITERS) {
+    while (machineChanged && machineIters < 5) {
+      // Cap it for performance
       machineChanged = false;
       machineIters++;
 
@@ -1209,6 +1366,7 @@ export default function App() {
                 if (
                   px >= 0 &&
                   px < cols &&
+                  px < cols &&
                   py >= 0 &&
                   py < rows &&
                   b[py][px].piece &&
@@ -1224,6 +1382,7 @@ export default function App() {
                     b[ny][nx].type !== "void"
                   ) {
                     let t = b[ny][nx];
+                    // Inside priorityTiers.forEach -> Handle Rotators
                     if (
                       !t.piece &&
                       !t.type.startsWith("locked") &&
@@ -1237,6 +1396,7 @@ export default function App() {
                         rotation: b[py][px].rotation || 0,
                         isRot: true,
                         isCW,
+                        pivot: { dx: x - nx, dy: y - ny }, // <-- NEW: Real distance from destination back to rotator
                       });
                     }
                   }
@@ -1268,6 +1428,13 @@ export default function App() {
             : m.rotation;
           b[m.to.y][m.to.x].piece = m.piece;
           b[m.to.y][m.to.x].rotation = targetRot;
+
+          // FIX: Rotators use isCW, not m.dir
+          const rotType = m.isCW ? "rot_cw" : "rot_ccw";
+
+          b[m.to.y][m.to.x].anim = m.isRot ? rotType : "move";
+          if (m.isRot) b[m.to.y][m.to.x].pivot = m.pivot; // Properly copies the pivot
+          b[m.to.y][m.to.x].animId = Date.now() + Math.random();
         });
 
         // Trigger reactions (including potential Duplicators) for moved pieces
@@ -1640,7 +1807,8 @@ export default function App() {
   const handleCellInteract = (x, y, e) => {
     if (isDragging.current) return; // Prevent painting while panning
     if (e.type === "pointerdown" && e.button !== 0) return; // Only left-click
-    if (e.type === "pointerenter" && (e.buttons !== 1 || !isBuildMode)) return;
+    // Only restrict pointerenter if we are IN build mode. During gameplay, we want hover!
+    if (isBuildMode && e.type === "pointerenter" && e.buttons !== 1) return;
     if (gameOver && !isBuildMode) return;
 
     if (isBuildMode) {
@@ -1729,6 +1897,21 @@ export default function App() {
       return;
     }
 
+    if (e.type === "pointerenter") {
+      const sim = simulateTurn(
+        x,
+        y,
+        currentPlayer,
+        board,
+        activePlayers,
+        cols,
+        rows,
+        gameMode,
+      );
+      setGhostBoard(sim.board);
+      setGhostTrails(sim.trails);
+      return;
+    }
     resolveTurn(x, y);
   };
 
@@ -3748,6 +3931,21 @@ export default function App() {
                   )),
                 )}
 
+                {/* Ghost Trails - Made brighter and thicker so you can't miss them */}
+                {ghostTrails.map((trail, i) => (
+                  <line
+                    key={`trail-${i}`}
+                    x1={`${((trail.x1 + 0.5) * 100) / cols}%`}
+                    y1={`${((trail.y1 + 0.5) * 100) / rows}%`}
+                    x2={`${((trail.x2 + 0.5) * 100) / cols}%`}
+                    y2={`${((trail.y2 + 0.5) * 100) / rows}%`}
+                    stroke={PLAYER_COLORS[currentPlayer] || "#22d3ee"} // Updated this line!
+                    strokeWidth="6"
+                    strokeDasharray="8, 8"
+                    strokeLinecap="round"
+                    className="pointer-events-none animate-pulse opacity-80"
+                  />
+                ))}
                 {/* Score Lines */}
                 {drawnLines.map((line) => (
                   <line
@@ -3773,6 +3971,10 @@ export default function App() {
                       key={`${y}-${x}`}
                       onPointerDown={(e) => handleCellInteract(x, y, e)}
                       onPointerEnter={(e) => handleCellInteract(x, y, e)}
+                      onPointerLeave={() => {
+                        setGhostBoard(null);
+                        setGhostTrails([]);
+                      }}
                       onPointerMove={(e) => {
                         if (
                           isBuildMode &&
@@ -3799,6 +4001,7 @@ export default function App() {
                       className={`
                         relative w-full h-full transition-colors duration-200 box-border
                         ${isVoid ? "bg-transparent" : "border border-slate-950/80 bg-slate-800/60"}
+                        ${!isVoid && cell.isTarget ? (gameMode === "zone_control" && movesMade % 10 === 9 ? "bg-red-900/60 shadow-[inset_0_0_20px_rgba(220,38,38,0.6)] animate-pulse" : "bg-indigo-900/40 shadow-[inset_0_0_15px_rgba(99,102,241,0.3)]") : ""}
                         ${!isVoid && cell.isTarget ? "bg-indigo-900/40 shadow-[inset_0_0_15px_rgba(99,102,241,0.3)]" : ""}
                         ${!isVoid && isBuildMode && !editorTool.startsWith("wall") ? "hover:bg-slate-700" : ""}
                         ${!isVoid && !isBuildMode && !cell.piece && !cell.type.startsWith("locked") ? "hover:bg-slate-700 cursor-pointer" : ""}
@@ -3930,20 +4133,46 @@ export default function App() {
                           {/* Player Piece Icon */}
                           {cell.piece && (
                             <img
+                              key={`${cell.piece}-${cell.animId || "base"}`}
                               src={`/icons/${cell.piece === "N" ? "Neutral" : cell.piece}.svg`}
                               alt={cell.piece}
                               style={{
                                 width: `${iconSizes[cell.piece] || 40}px`,
                                 height: `${iconSizes[cell.piece] || 40}px`,
+                                transformOrigin:
+                                  cell.anim === "rot" && cell.pivot
+                                    ? `${50 + cell.pivot.dx * 100}% ${50 + cell.pivot.dy * 100}%`
+                                    : "center center",
                               }}
                               className={`absolute z-10 transition-all duration-300 select-none pointer-events-none
-                    ${
-                      cell.dead && cell.piece !== "N"
-                        ? "opacity-30 grayscale blur-[0.5px]"
-                        : "drop-shadow-[0_0_8px_rgba(255,255,255,0.6)]"
-                    }`}
+            ${cell.anim === "place" ? "animate-bounce-in" : ""}
+            ${cell.anim === "dup" ? "animate-ping-once" : ""}
+            ${cell.anim === "rot_cw" ? "animate-spin-fast" : ""}
+            ${cell.anim === "rot_ccw" ? "animate-spin-fastccw" : ""}
+            ${cell.anim === "move" ? "animate-slide-in" : ""}
+            ${
+              cell.dead && cell.piece !== "N"
+                ? "opacity-30 grayscale blur-[0.5px]"
+                : "drop-shadow-[0_0_8px_rgba(255,255,255,0.6)]"
+            }`}
                             />
                           )}
+
+                          {/* Ghost Piece (Trail/Preview) */}
+                          {ghostBoard &&
+                            ghostBoard[y][x].piece &&
+                            ghostBoard[y][x].isGhost && (
+                              <img
+                                src={`/icons/${ghostBoard[y][x].piece === "N" ? "Neutral" : ghostBoard[y][x].piece}.svg`}
+                                alt="ghost"
+                                style={{
+                                  width: `${iconSizes[ghostBoard[y][x].piece] || 40}px`,
+                                  height: `${iconSizes[ghostBoard[y][x].piece] || 40}px`,
+                                  transformOrigin: "center center",
+                                }}
+                                className="absolute z-[11] select-none pointer-events-none drop-shadow-md animate-pulse opacity-60 brightness-150 scale-110"
+                              />
+                            )}
                         </div>
                       )}
                     </div>
