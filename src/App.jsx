@@ -2723,23 +2723,6 @@ export default function App() {
                   </div>
                   <div className="p-3 bg-slate-950 rounded border border-slate-800 flex flex-col gap-2">
                     <label className="text-[10px] text-slate-500 font-bold uppercase">
-                      Players
-                    </label>
-                    <select
-                      value={activePlayers.length}
-                      onChange={(e) => {
-                        const count = parseInt(e.target.value);
-                        setActivePlayers(["X", "O", "T", "S"].slice(0, count));
-                      }}
-                      className="w-full bg-slate-800 text-white p-1.5 rounded border border-slate-700 text-xs outline-none"
-                    >
-                      <option value="2">2 Players (X, O)</option>
-                      <option value="3">3 Players (X, O, T)</option>
-                      <option value="4">4 Players (X, O, T, S)</option>
-                    </select>
-                  </div>
-                  <div className="p-3 bg-slate-950 rounded border border-slate-800 flex flex-col gap-2">
-                    <label className="text-[10px] text-slate-500 font-bold uppercase">
                       Game Mode
                     </label>
                     <select
