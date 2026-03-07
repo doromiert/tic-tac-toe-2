@@ -1,18 +1,42 @@
-# tic-tac-toe evolved
+# sv
 
-a vibe coded prototype of an old idea i had of a sequel to tic tac toe.
+Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
 
-features:
+## Creating a project
 
-- movers
-  - zappers: move symbols to their destination in one go
-  - movers: move symbols each turn
-- zapspace: neutral tile that can count as both X or O
-- walls: block lines
-- combos: give you extra turns when you manage to score a line using more than 3 symbols in one turn
-- duplicators: duplicate a symbol behind them
-- flippers: flip X to O and vice versa
-- switches: lock a space unless there's a symbol on top of them
-- rotators: rotate symbols around
-- custom maps using JSON
-- campaigns using JSON
+If you're seeing this, you've probably already done this step. Congrats!
+
+```sh
+# create a new project
+npx sv create my-app
+```
+
+To recreate this project with the same configuration:
+
+```sh
+# recreate this project
+npx sv@0.12.5 create --template minimal --types ts --add prettier eslint vitest="usages:unit,component" playwright sveltekit-adapter="adapter:auto" devtools-json --install npm .
+```
+
+## Developing
+
+Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
+
+```sh
+npm run dev
+
+# or start the server and open the app in a new browser tab
+npm run dev -- --open
+```
+
+## Building
+
+To create a production version of your app:
+
+```sh
+npm run build
+```
+
+You can preview the production build with `npm run preview`.
+
+> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
