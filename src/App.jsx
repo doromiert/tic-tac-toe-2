@@ -78,7 +78,21 @@ const simulateTurn = (
 ) => {
   let b = JSON.parse(JSON.stringify(currentBoard));
   let trails = [];
-  let q = [{ x: startX, y: startY, piece: player, overwrite: false }];
+
+  // 1 STEP LIMIT: Change this if you ever want longer predictions
+  const MAX_SIM_STEPS = 1;
+
+  // Tag the origin piece with isSim and a step counter
+  let q = [
+    {
+      x: startX,
+      y: startY,
+      piece: player,
+      overwrite: false,
+      isSim: true,
+      simStepCount: 0,
+    },
+  ];
 
   if (gameMode === "mirror_protocol") {
     let mx = cols - 1 - startX;
@@ -89,223 +103,431 @@ const simulateTurn = (
         !mCell.mechanicalLock &&
         !["void", "locked_mech", "locked_letter"].includes(mCell.type)
       ) {
-        q.push({ x: mx, y: startY, piece: player, overwrite: false });
+        q.push({
+          x: mx,
+          y: startY,
+          piece: player,
+          overwrite: false,
+          isSim: true,
+          simStepCount: 0,
+        });
       }
     }
   }
 
-  let iters = 0;
-  while (q.length > 0 && iters < 100) {
-    iters++;
-    let { x, y, piece, overwrite } = q.shift();
-    if (y < 0 || y >= rows || x < 0 || x >= cols) continue;
-    let cx = x,
-      cy = y;
+  const MAX_ITERATIONS = 100;
 
-    // 1. ZAP SLIDING (Only for Zaps)
-    if (b[cy][cx].type === "zap") {
-      let visitedZaps = new Set([`${cx},${cy}`]); // <-- NEW: Track visited tiles
-      while (true) {
-        let dir = b[cy][cx].dir;
-        let nx = cx + (dir === "r" ? 1 : dir === "l" ? -1 : 0);
-        let ny = cy + (dir === "d" ? 1 : dir === "u" ? -1 : 0);
-
-        if (ny < 0 || ny >= rows || nx < 0 || nx >= cols) break;
-
-        // <-- NEW: Loop Detection
-        if (visitedZaps.has(`${nx},${ny}`)) break;
-
-        let nextCell = b[ny][nx];
-
-        let wallBlocked =
-          (dir === "r" && b[cy][cx].walls.r) ||
-          (dir === "l" && nextCell.walls.r) ||
-          (dir === "d" && b[cy][cx].walls.b) ||
-          (dir === "u" && nextCell.walls.b);
-
-        const isBlocker = (c) =>
-          [
-            "dup",
-            "rot_cw",
-            "rot_ccw",
-            "neutral",
-            "trash",
-            "flip",
-            "switch",
-          ].includes(c.type) ||
-          c.type === "void" ||
-          (c.type === "locked_letter" && !c.unlocked) ||
-          c.piece;
-
-        if (wallBlocked || (isBlocker(nextCell) && !overwrite)) break;
-
-        if (overwrite && nextCell.piece) {
-          trails.push({ x1: cx, y1: cy, x2: nx, y2: ny });
-          cx = nx;
-          cy = ny;
-          break;
-        }
-
-        visitedZaps.add(`${nx},${ny}`); // <-- NEW: Mark as visited
-        trails.push({ x1: cx, y1: cy, x2: nx, y2: ny });
-        cx = nx;
-        cy = ny;
-        if (nextCell.type !== "zap") break;
-      }
-    }
-
-    let cell = b[cy][cx];
-    const isBlockerFinal = (c) =>
-      [
+  const processReactions = (queue) => {
+    let iters = 0;
+    const isBlocker = (c) => {
+      if (!c) return true;
+      const machines = [
         "dup",
         "rot_cw",
         "rot_ccw",
         "neutral",
-        "trash",
         "flip",
         "switch",
-      ].includes(c.type) ||
-      c.type === "void" ||
-      (c.type === "locked_letter" && !c.unlocked) ||
-      c.piece;
-
-    if (!overwrite && isBlockerFinal(cell)) continue;
-    if (
-      cell.type === "void" ||
-      (cell.type === "locked_letter" && !cell.unlocked)
-    )
-      continue;
-    if (["dup", "rot_cw", "rot_ccw", "neutral"].includes(cell.type)) continue;
-
-    if (cell.flipMod || cell.type === "flip") {
-      let idx = activePlayers.indexOf(piece);
-      piece = activePlayers[(idx + 1) % activePlayers.length];
-    }
-
-    const checkDup = (dx, dy, targetDir, pushX, pushY) => {
-      let neighbor = b[cy + dy]?.[cx + dx];
-      if (neighbor?.type === "dup" && neighbor.dir === targetDir) {
-        q.push({ x: cx + pushX, y: cy + pushY, piece, overwrite: true });
-      }
+      ];
+      if (machines.includes(c.type)) return true;
+      if (c.type === "void") return true;
+      if (c.type === "locked_letter" && !c.unlocked) return true;
+      if (c.piece) return true;
+      return false;
     };
-    checkDup(1, 0, "r", 2, 0);
-    checkDup(-1, 0, "l", -2, 0);
-    checkDup(0, 1, "d", 0, 2);
-    checkDup(0, -1, "u", 0, -2);
 
-    if (cell.type === "trash") continue;
+    while (queue.length > 0 && iters < MAX_ITERATIONS) {
+      iters++;
+      let { x, y, piece, overwrite, rotation, isSim, simStepCount } =
+        queue.shift();
+      if (y < 0 || y >= rows || x < 0 || x >= cols) continue;
+      if (b[y][x].type === "void") continue;
 
-    cell.piece = piece;
-    cell.isGhost = true;
-    if (cell.type === "switch") {
-      b.forEach((r) =>
-        r.forEach((c) => {
-          if (c.type === "locked_letter" && c.letter === cell.letter)
-            c.unlocked = true;
-        }),
-      );
+      let cx = x,
+        cy = y;
+      let didZap = false;
+
+      if (b[cy][cx].type === "zap") {
+        let visitedZaps = new Set([`${cx},${cy}`]);
+        while (true) {
+          let current = b[cy][cx];
+          let dir = current.dir;
+          let nx = cx + (dir === "r" ? 1 : dir === "l" ? -1 : 0);
+          let ny = cy + (dir === "d" ? 1 : dir === "u" ? -1 : 0);
+
+          if (ny < 0 || ny >= rows || nx < 0 || nx >= cols) break;
+          if (visitedZaps.has(`${nx},${ny}`)) break;
+
+          let nextCell = b[ny][nx];
+          let wallBlocked =
+            (dir === "r" && current.walls.r) ||
+            (dir === "l" && nextCell.walls.r) ||
+            (dir === "d" && current.walls.b) ||
+            (dir === "u" && nextCell.walls.b);
+
+          if (wallBlocked || (isBlocker(nextCell) && !overwrite)) break;
+
+          didZap = true;
+          if (overwrite && nextCell.piece) {
+            if (isSim)
+              trails.push({ type: "straight", x1: cx, y1: cy, x2: nx, y2: ny });
+            cx = nx;
+            cy = ny;
+            break;
+          }
+
+          visitedZaps.add(`${nx},${ny}`);
+          if (isSim)
+            trails.push({ type: "straight", x1: cx, y1: cy, x2: nx, y2: ny });
+          cx = nx;
+          cy = ny;
+          if (nextCell.type !== "zap") break;
+        }
+      }
+
+      let newStepCount = simStepCount;
+
+      if (cx !== x || cy !== y) {
+        if (b[y][x].piece === piece) {
+          b[y][x].piece = null;
+          b[y][x].isSim = false;
+        }
+      }
+
+      let cell = b[cy][cx];
+
+      if (!overwrite && isBlocker(cell)) continue;
+      if (
+        cell.type === "void" ||
+        (cell.type === "locked_letter" && !cell.unlocked)
+      )
+        continue;
+      if (["dup", "rot_cw", "rot_ccw", "neutral"].includes(cell.type)) continue;
+
+      if (cell.flipMod || cell.type === "flip") {
+        let idx = activePlayers.indexOf(piece);
+        piece = activePlayers[(idx + 1) % activePlayers.length];
+      }
+
+      const checkDup = (dx, dy, targetDir, pushX, pushY) => {
+        let neighbor = b[cy + dy]?.[cx + dx];
+        if (neighbor?.type === "dup" && neighbor.dir === targetDir) {
+          queue.push({
+            x: cx + pushX,
+            y: cy + pushY,
+            piece,
+            overwrite: true,
+            rotation,
+            isSim,
+            simStepCount: newStepCount, // Inherit step count
+          });
+        }
+      };
+
+      checkDup(1, 0, "r", 2, 0);
+      checkDup(-1, 0, "l", -2, 0);
+      checkDup(0, 1, "d", 0, 2);
+      checkDup(0, -1, "u", 0, -2);
+
+      if (cell.type === "trash") continue;
+
+      cell.piece = piece;
+      cell.isSim = isSim;
+      cell.simStepCount = newStepCount;
+      if (rotation !== undefined) cell.rotation = rotation;
+
+      if (cell.type === "switch") {
+        b.forEach((r) =>
+          r.forEach((c) => {
+            if (c.type === "locked_letter" && c.letter === cell.letter)
+              c.unlocked = true;
+          }),
+        );
+      }
     }
-  }
+  };
 
-  // 2. MOVER PREDICTION (Checks if newly placed ghost pieces landed on a Mover)
-  let iteration = 0;
-  b.forEach((row, y) => {
-    row.forEach((cell, x) => {
-      if (iteration > 0) return;
-      // Only process movers that have a piece that wasn't there before
-      if (cell.type === "mov" && cell.piece && !currentBoard[y][x].piece) {
-        let dir = cell.dir;
-        let nx = x + (dir === "r" ? 1 : dir === "l" ? -1 : 0);
-        let ny = y + (dir === "d" ? 1 : dir === "u" ? -1 : 0);
+  processReactions(q);
 
-        let wallBlocked =
-          (dir === "r" && cell.walls.r) ||
-          (dir === "l" && nx >= 0 && nx < cols && b[ny][nx].walls.r) ||
-          (dir === "d" && cell.walls.b) ||
-          (dir === "u" && ny >= 0 && ny < rows && b[ny][nx].walls.b);
+  let machineChanged = true;
+  let machineIters = 0;
+  while (machineChanged && machineIters < 5) {
+    machineChanged = false;
+    machineIters++;
 
-        // Check if destination is valid for mover to push into
-        if (
-          !wallBlocked &&
-          nx >= 0 &&
-          nx < cols &&
-          ny >= 0 &&
-          ny < rows &&
-          !b[ny][nx].piece &&
-          !["void", "dup", "neutral", "rot_cw", "rot_ccw"].includes(
-            b[ny][nx].type,
-          ) &&
-          !(b[ny][nx].type === "locked_letter" && !b[ny][nx].unlocked)
-        ) {
-          // Add the 1-tile Mover trail
-          trails.push({ x1: x, y1: y, x2: nx, y2: ny });
-          iteration++;
+    const priorityTiers = [["rot_cw"], ["rot_ccw"], ["mov"]];
 
-          let cx = nx;
-          let cy = ny;
-          let movedPiece = cell.piece;
+    priorityTiers.forEach((tier) => {
+      let moverQueue = [];
+      b.forEach((row, y) => {
+        row.forEach((cell, x) => {
+          if (!tier.includes(cell.type)) return;
 
-          // Clear origin
-          cell.piece = null;
-          cell.isGhost = false;
-          // If Mover pushed it onto a Zap, trace that zap too!
-          if (b[cy][cx].type === "zap") {
-            let zVisited = new Set([`${cx},${cy}`]); // <-- NEW: Track visited
-            while (true) {
-              let zDir = b[cy][cx].dir;
-              let zx = cx + (zDir === "r" ? 1 : zDir === "l" ? -1 : 0);
-              let zy = cy + (zDir === "d" ? 1 : zDir === "u" ? -1 : 0);
+          // ENFORCE SIMULATION LIMIT: Stop machines from moving the preview piece if it's already moved!
+          if (cell.isSim && cell.simStepCount >= MAX_SIM_STEPS) return;
 
-              if (zy < 0 || zy >= rows || zx < 0 || zx >= cols) break;
+          if (cell.type === "mov" && cell.piece && !cell.dead) {
+            let nx = x + (cell.dir === "r" ? 1 : cell.dir === "l" ? -1 : 0);
+            let ny = y + (cell.dir === "d" ? 1 : cell.dir === "u" ? -1 : 0);
 
-              // <-- NEW: Loop Detection
-              if (zVisited.has(`${zx},${zy}`)) break;
+            let wallBlocked =
+              (cell.dir === "r" && cell.walls.r) ||
+              (cell.dir === "l" && nx >= 0 && nx < cols && b[ny][nx].walls.r) ||
+              (cell.dir === "d" && cell.walls.b) ||
+              (cell.dir === "u" && ny >= 0 && ny < rows && b[ny][nx].walls.b);
 
-              let nextCell = b[zy][zx];
-
-              let zWallBlocked =
-                (zDir === "r" && b[cy][cx].walls.r) ||
-                (zDir === "l" && nextCell.walls.r) ||
-                (zDir === "d" && b[cy][cx].walls.b) ||
-                (zDir === "u" && nextCell.walls.b);
-
-              const isZBlocker = (c) =>
-                [
-                  "dup",
-                  "rot_cw",
-                  "rot_ccw",
-                  "neutral",
-                  "trash",
-                  "flip",
-                  "switch",
-                ].includes(c.type) ||
-                c.type === "void" ||
-                (c.type === "locked_letter" && !c.unlocked) ||
-                c.piece;
-
-              if (zWallBlocked || isZBlocker(nextCell)) break;
-
-              zVisited.add(`${zx},${zy}`); // <-- NEW: Mark as visited
-              trails.push({ x1: cx, y1: cy, x2: zx, y2: zy });
-              cx = zx;
-              cy = zy;
-              if (nextCell.type !== "zap") break;
+            if (
+              !wallBlocked &&
+              nx >= 0 &&
+              nx < cols &&
+              ny >= 0 &&
+              ny < rows &&
+              b[ny][nx].type !== "void" &&
+              b[ny][nx].type !== "dup" &&
+              b[ny][nx].type !== "neutral"
+            ) {
+              if (b[ny][nx].type === "locked_letter" && !b[ny][nx].unlocked)
+                return;
+              let target = b[ny][nx];
+              if (
+                !target.piece &&
+                !["dup", "rot_cw", "rot_ccw"].includes(target.type)
+              ) {
+                moverQueue.push({
+                  from: { x, y },
+                  to: { x: nx, y: ny },
+                  piece: cell.piece,
+                  rotation: cell.rotation || 0,
+                  isRot: false,
+                  isSim: cell.isSim,
+                  simStepCount: cell.isSim ? cell.simStepCount + 1 : 0,
+                });
+              }
             }
           }
 
-          // Land the final piece
-          b[cy][cx].piece = movedPiece;
-          b[cy][cx].isGhost = true;
+          if (
+            (cell.type === "rot_cw" || cell.type === "rot_ccw") &&
+            !cell.dead
+          ) {
+            let isCW = cell.type === "rot_cw";
+            [
+              [0, -1],
+              [1, 0],
+              [0, 1],
+              [-1, 0],
+            ].forEach(([dx, dy]) => {
+              let px = x + dx,
+                py = y + dy;
+              if (
+                px >= 0 &&
+                px < cols &&
+                py >= 0 &&
+                py < rows &&
+                b[py][px].piece &&
+                !b[py][px].dead
+              ) {
+                // Enforce limit for Rotators too!
+                if (b[py][px].isSim && b[py][px].simStepCount >= MAX_SIM_STEPS)
+                  return;
+
+                let nx = x + (isCW ? -dy : dy),
+                  ny = y + (isCW ? dx : -dx);
+                if (
+                  nx >= 0 &&
+                  nx < cols &&
+                  ny >= 0 &&
+                  ny < rows &&
+                  b[ny][nx].type !== "void"
+                ) {
+                  let t = b[ny][nx];
+                  if (
+                    !t.piece &&
+                    !t.type.startsWith("locked") &&
+                    t.type !== "dup" &&
+                    t.type !== "neutral"
+                  ) {
+                    moverQueue.push({
+                      from: { x: px, y: py },
+                      to: { x: nx, y: ny },
+                      piece: b[py][px].piece,
+                      rotation: b[py][px].rotation || 0,
+                      isRot: true,
+                      isCW,
+                      cx: x,
+                      cy: y,
+                      isSim: b[py][px].isSim,
+                      simStepCount: b[py][px].isSim
+                        ? b[py][px].simStepCount + 1
+                        : 0,
+                    });
+                  }
+                }
+              }
+            });
+          }
+        });
+      });
+
+      if (moverQueue.length === 0) return;
+
+      let uniqueMoves = [];
+      let claimedSources = new Set();
+      moverQueue.forEach((m) => {
+        let sKey = `${m.from.x},${m.from.y}`;
+        if (!claimedSources.has(sKey)) {
+          claimedSources.add(sKey);
+          uniqueMoves.push(m);
+        }
+      });
+
+      uniqueMoves.forEach((m) => {
+        b[m.from.y][m.from.x].piece = null;
+        b[m.from.y][m.from.x].isSim = false;
+      });
+
+      uniqueMoves.forEach((m) => {
+        machineChanged = true;
+        let targetRot = m.isRot ? m.rotation + (m.isCW ? 90 : -90) : m.rotation;
+        b[m.to.y][m.to.x].piece = m.piece;
+        b[m.to.y][m.to.x].rotation = targetRot;
+        b[m.to.y][m.to.x].isSim = m.isSim;
+        b[m.to.y][m.to.x].simStepCount = m.simStepCount;
+
+        if (m.isSim) {
+          if (m.isRot) {
+            trails.push({
+              type: "arc",
+              x1: m.from.x,
+              y1: m.from.y,
+              x2: m.to.x,
+              y2: m.to.y,
+              cx: m.cx,
+              cy: m.cy,
+              isCW: m.isCW,
+            });
+          } else {
+            trails.push({
+              type: "straight",
+              x1: m.from.x,
+              y1: m.from.y,
+              x2: m.to.x,
+              y2: m.to.y,
+            });
+          }
+        }
+      });
+
+      processReactions(
+        uniqueMoves.map((m) => ({
+          x: m.to.x,
+          y: m.to.y,
+          piece: m.piece,
+          rotation: b[m.to.y][m.to.x].rotation,
+          overwrite: false,
+          isSim: m.isSim,
+          simStepCount: m.simStepCount,
+        })),
+      );
+    });
+
+    b.forEach((row, y) => {
+      row.forEach((cell, x) => {
+        if (cell.type === "dup" && !cell.dead) {
+          const dirMap = {
+            r: [-1, 0, 1, 0],
+            l: [1, 0, -1, 0],
+            d: [0, -1, 0, 1],
+            u: [0, 1, 0, -1],
+          };
+          const [inX, inY, outX, outY] = dirMap[cell.dir] || [0, 0, 0, 0];
+
+          let inputCell = b[y + inY]?.[x + inX];
+          if (inputCell && inputCell.piece && !inputCell.dead) {
+            // Block duplication if the piece has reached the simulation step limit
+            if (inputCell.isSim && inputCell.simStepCount >= MAX_SIM_STEPS)
+              return;
+
+            machineChanged = true;
+            processReactions([
+              {
+                x: x + outX,
+                y: y + outY,
+                piece: inputCell.piece,
+                rotation: inputCell.rotation || 0,
+                overwrite: true,
+                isSim: inputCell.isSim,
+                simStepCount: inputCell.isSim ? inputCell.simStepCount + 1 : 0,
+              },
+            ]);
+          }
+        }
+      });
+    });
+  }
+
+  if (gameMode === "cascade") {
+    let changed = true;
+    const blockingTypes = [
+      "void",
+      "locked_mech",
+      "locked_letter",
+      "rot_cw",
+      "rot_ccw",
+      "dup",
+      "neutral",
+    ];
+
+    while (changed) {
+      changed = false;
+      for (let x = 0; x < cols; x++) {
+        for (let y = rows - 2; y >= 0; y--) {
+          const current = b[y][x];
+          const below = b[y + 1][x];
+
+          if (
+            current.piece &&
+            !current.mechanicalLock &&
+            current.type !== "locked_mech" &&
+            !current.walls?.b
+          ) {
+            if (
+              !below.piece &&
+              !below.mechanicalLock &&
+              !blockingTypes.includes(below.type)
+            ) {
+              if (current.isSim) {
+                if (current.simStepCount >= MAX_SIM_STEPS) continue; // Respect limit in gravity!
+                trails.push({
+                  type: "straight",
+                  x1: x,
+                  y1: y,
+                  x2: x,
+                  y2: y + 1,
+                });
+              }
+
+              below.piece = current.piece;
+              below.rotation = current.rotation;
+              below.isSim = current.isSim;
+              below.simStepCount = current.isSim ? current.simStepCount + 1 : 0;
+              current.piece = null;
+              current.isSim = false;
+              changed = true;
+            }
+          }
         }
       }
-    });
-  });
+    }
+  }
 
-  // Diff the board to find any new pieces and flag them as ghosts
+  // ONLY show ghosts for the specific piece you hovered! Clears all other pieces on the board.
   b.forEach((row, y) => {
     row.forEach((cell, x) => {
-      if (cell.piece && !currentBoard[y][x].piece) {
+      if (cell.isSim && cell.piece && !currentBoard[y][x].piece) {
         cell.isGhost = true;
+      } else {
+        cell.isGhost = false;
       }
     });
   });
@@ -1401,21 +1623,26 @@ export default function App() {
       const priorityTiers = [["rot_cw"], ["rot_ccw"], ["mov"]];
 
       priorityTiers.forEach((tier) => {
-        let moverQueue = [];
+        let prospectiveMoves = [];
+
+        // STEP 1: Gather ALL intended moves, ignoring if the target currently has a piece
         b.forEach((row, y) => {
           row.forEach((cell, x) => {
             if (!tier.includes(cell.type)) return;
 
-            // Handle Movers: Respect occupancy (no eating)
+            // Handle Movers
             if (cell.type === "mov" && cell.piece && !cell.dead) {
               let nx = x + (cell.dir === "r" ? 1 : cell.dir === "l" ? -1 : 0);
               let ny = y + (cell.dir === "d" ? 1 : cell.dir === "u" ? -1 : 0);
 
               let wallBlocked =
                 (cell.dir === "r" && cell.walls.r) ||
-                (cell.dir === "l" && nx >= 0 && b[ny][nx].walls.r) ||
+                (cell.dir === "l" &&
+                  nx >= 0 &&
+                  nx < cols &&
+                  b[ny][nx].walls.r) ||
                 (cell.dir === "d" && cell.walls.b) ||
-                (cell.dir === "u" && ny >= 0 && b[ny][nx].walls.b);
+                (cell.dir === "u" && ny >= 0 && ny < rows && b[ny][nx].walls.b);
 
               if (
                 !wallBlocked &&
@@ -1430,12 +1657,12 @@ export default function App() {
                 if (b[ny][nx].type === "locked_letter" && !b[ny][nx].unlocked)
                   return;
                 let target = b[ny][nx];
-                // Movers only move if the destination is empty
+
+                // Exclude pushing ONTO machines, but we NO LONGER check !target.piece here
                 if (
-                  !target.piece &&
                   ["dup", "rot_cw", "rot_ccw"].includes(target.type) === false
                 ) {
-                  moverQueue.push({
+                  prospectiveMoves.push({
                     from: { x, y },
                     to: { x: nx, y: ny },
                     piece: cell.piece,
@@ -1446,7 +1673,7 @@ export default function App() {
               }
             }
 
-            // Handle Rotators: Standard logic
+            // Handle Rotators
             if (
               (cell.type === "rot_cw" || cell.type === "rot_ccw") &&
               !cell.dead
@@ -1463,7 +1690,6 @@ export default function App() {
                 if (
                   px >= 0 &&
                   px < cols &&
-                  px < cols &&
                   py >= 0 &&
                   py < rows &&
                   b[py][px].piece &&
@@ -1479,21 +1705,20 @@ export default function App() {
                     b[ny][nx].type !== "void"
                   ) {
                     let t = b[ny][nx];
-                    // Inside priorityTiers.forEach -> Handle Rotators
+                    // Again, NO LONGER check !t.piece here
                     if (
-                      !t.piece &&
                       !t.type.startsWith("locked") &&
                       t.type !== "dup" &&
                       t.type !== "neutral"
                     ) {
-                      moverQueue.push({
+                      prospectiveMoves.push({
                         from: { x: px, y: py },
                         to: { x: nx, y: ny },
                         piece: b[py][px].piece,
                         rotation: b[py][px].rotation || 0,
                         isRot: true,
                         isCW,
-                        pivot: { dx: x - nx, dy: y - ny }, // <-- NEW: Real distance from destination back to rotator
+                        pivot: { dx: x - nx, dy: y - ny },
                       });
                     }
                   }
@@ -1503,8 +1728,98 @@ export default function App() {
           });
         });
 
+        // STEP 2: Optimistic Dependency Resolver
+        let moverQueue = [];
+        let freedSpaces = new Set();
+        let claimedSpaces = new Set();
+        let evaluating = true;
+
+        // Loop until chains are fully resolved
+        while (evaluating || prospectiveMoves.length > 0) {
+          evaluating = false;
+          let nextProspective = [];
+
+          for (let m of prospectiveMoves) {
+            let targetKey = `${m.to.x},${m.to.y}`;
+            let sourceKey = `${m.from.x},${m.from.y}`;
+            let targetCell = b[m.to.y][m.to.x];
+
+            // Space is free if it has NO piece, OR if its piece is confirmed moving away
+            let isSpaceFree = false;
+            if (!targetCell.piece && !claimedSpaces.has(targetKey)) {
+              isSpaceFree = true;
+            } else if (
+              targetCell.piece &&
+              freedSpaces.has(targetKey) &&
+              !claimedSpaces.has(targetKey)
+            ) {
+              isSpaceFree = true;
+            }
+
+            if (isSpaceFree) {
+              moverQueue.push(m);
+              freedSpaces.add(sourceKey);
+              claimedSpaces.add(targetKey);
+              evaluating = true; // State changed, something else might be unblocked now
+            } else {
+              nextProspective.push(m); // Still blocked, try again next loop
+            }
+          }
+          prospectiveMoves = nextProspective;
+
+          // STEP 3: Cycle Detection (e.g. 4 rotators stuck in a circle)
+          if (!evaluating && prospectiveMoves.length > 0) {
+            let graph = new Map();
+            prospectiveMoves.forEach((m) =>
+              graph.set(`${m.from.x},${m.from.y}`, m),
+            );
+
+            let foundCycle = false;
+            for (let m of prospectiveMoves) {
+              let visited = new Set();
+              let currentKey = `${m.from.x},${m.from.y}`;
+              let cyclePath = [];
+
+              while (currentKey && graph.has(currentKey)) {
+                if (visited.has(currentKey)) {
+                  let startIdx = cyclePath.indexOf(currentKey);
+                  if (startIdx !== -1) {
+                    let cycleKeys = cyclePath.slice(startIdx);
+
+                    // Verify the cycle doesn't collide with existing claims
+                    let cycleValid = cycleKeys.every(
+                      (k) =>
+                        !claimedSpaces.has(
+                          `${graph.get(k).to.x},${graph.get(k).to.y}`,
+                        ),
+                    );
+
+                    if (cycleValid) {
+                      cycleKeys.forEach((k) => {
+                        let cm = graph.get(k);
+                        moverQueue.push(cm);
+                        freedSpaces.add(`${cm.from.x},${cm.from.y}`);
+                        claimedSpaces.add(`${cm.to.x},${cm.to.y}`);
+                      });
+                      foundCycle = true;
+                      evaluating = true; // Unblocked a cycle, resume standard evaluation!
+                    }
+                  }
+                  break;
+                }
+                visited.add(currentKey);
+                cyclePath.push(currentKey);
+                currentKey = `${graph.get(currentKey).to.x},${graph.get(currentKey).to.y}`;
+              }
+              if (foundCycle) break;
+            }
+            if (!foundCycle) break; // Deadlock, nothing more can be moved
+          }
+        }
+
         if (moverQueue.length === 0) return;
 
+        // STEP 4: Execute the resolved queue exactly as before
         let uniqueMoves = [];
         let claimedSources = new Set();
         moverQueue.forEach((m) => {
@@ -1526,15 +1841,12 @@ export default function App() {
           b[m.to.y][m.to.x].piece = m.piece;
           b[m.to.y][m.to.x].rotation = targetRot;
 
-          // FIX: Rotators use isCW, not m.dir
           const rotType = m.isCW ? "rot_cw" : "rot_ccw";
-
           b[m.to.y][m.to.x].anim = m.isRot ? rotType : "move";
-          if (m.isRot) b[m.to.y][m.to.x].pivot = m.pivot; // Properly copies the pivot
+          if (m.isRot) b[m.to.y][m.to.x].pivot = m.pivot;
           b[m.to.y][m.to.x].animId = Date.now() + Math.random();
         });
 
-        // Trigger reactions (including potential Duplicators) for moved pieces
         processReactions(
           uniqueMoves.map((m) => ({
             x: m.to.x,
@@ -2902,7 +3214,7 @@ export default function App() {
                 <img
                   src={`/icons/${player}.svg`}
                   alt={player}
-                  className="w-8 h-8 sm:w-[7] sm:h-[7] object-contain drop-shadow-md"
+                  className="w-8 h-8  object-contain drop-shadow-md"
                   style={{
                     filter: isCurrent ? "none" : "grayscale(100%) opacity(70%)",
                   }}
@@ -4037,21 +4349,42 @@ export default function App() {
 
                 {/* Ghost Trails - Continuous Smooth Path in Pixel Space */}
                 {ghostTrails.length > 0 && (
-                  <polyline
+                  <path
                     fill="none"
-                    points={ghostTrails
-                      .map((t, i) => {
+                    d={(() => {
+                      let pathString = "";
+                      let lastX = null;
+                      let lastY = null;
+
+                      ghostTrails.forEach((t) => {
                         // We use 60 because your container is defined as {cols * 60}px
                         const x1 = (t.x1 + 0.5) * 60;
                         const y1 = (t.y1 + 0.5) * 60;
                         const x2 = (t.x2 + 0.5) * 60;
                         const y2 = (t.y2 + 0.5) * 60;
 
-                        return i === 0
-                          ? `${x1},${y1} ${x2},${y2}`
-                          : `${x2},${y2}`;
-                      })
-                      .join(" ")}
+                        // Move to the start point if we're at the beginning OR if the trail jumps (disjointed paths)
+                        if (lastX !== x1 || lastY !== y1) {
+                          pathString += `M ${x1} ${y1} `;
+                        }
+
+                        if (t.type === "arc") {
+                          // Arc command: A rx ry x-axis-rotation large-arc-flag sweep-flag targetX targetY
+                          // Since grid cells are 1 unit apart (60px), the radius of the turn is exactly 60.
+                          const sweep = t.isCW ? 1 : 0;
+                          pathString += `A 60 60 0 0 ${sweep} ${x2} ${y2} `;
+                        } else {
+                          // Straight line command: L targetX targetY
+                          pathString += `L ${x2} ${y2} `;
+                        }
+
+                        // Track the end of this segment to see if the next one connects seamlessly
+                        lastX = x2;
+                        lastY = y2;
+                      });
+
+                      return pathString.trim();
+                    })()}
                     stroke={PLAYER_COLORS[currentPlayer] || "#22d3ee"}
                     strokeWidth="4"
                     strokeLinecap="round"
