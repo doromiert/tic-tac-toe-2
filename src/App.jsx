@@ -2046,6 +2046,7 @@ export default function App() {
     gameMode,
     activePlayers = ["X", "O"],
   ) => {
+    let finalPositions = [];
     let validMoves = [];
     for (let y = 0; y < rows; y++) {
       for (let x = 0; x < cols; x++) {
@@ -2129,11 +2130,12 @@ export default function App() {
       }
 
       // --- NEW: Predictive Chain Engine (The Menace Protocol) ---
-      let finalPositions = [];
+      // finalPositions bridged to evaluatedPositions to prevent utility zeroing.
+      let finalPositions = [...evaluatedPositions];
 
       // --- TACTICAL EVALUATION ---
       finalPositions.forEach((pos) => {
-        const { x, y, isOverwrite } = pos;
+        let { x, y, isOverwrite } = pos;
         const targetCell = board[y][x];
 
         let actualPiece = aiPiece;
@@ -2167,6 +2169,7 @@ export default function App() {
 
         const checkLinePotential = (pieceToCheck) => {
           let score = 0;
+          let activeThreats = 0;
           const dirs = [
             [1, 0],
             [0, 1],
@@ -2201,9 +2204,18 @@ export default function App() {
               cy -= dy;
             }
 
-            if (count >= 3) score += 10000;
-            else if (count === 2 && openEnds > 0) score += 50;
+            if (count >= 3) {
+              score += 10000; // Lethal threat/win
+            } else if (count === 2 && openEnds > 0) {
+              score += 50;
+              if (openEnds === 2) score += 100; // Open-ended line priority
+              activeThreats++;
+            }
           });
+
+          // Multi-axis threat multiplier (Forking)
+          if (activeThreats >= 2) score += 3000;
+
           return score;
         };
 
@@ -2216,9 +2228,18 @@ export default function App() {
               checkLinePotential(opp) *
               (aiBehavior === "defensive" ? 1.5 : 1.2);
           });
-        } else if (opponents.includes(actualPiece)) {
-          utility -= checkLinePotential(actualPiece) * 2;
-          utility -= 100;
+
+          // Cascade vulnerability scan: Does this move create a stepping stone for the opponent?
+          if (gameMode === "cascade" && y > 0) {
+            let tempY = y;
+            y = y - 1; // Shift evaluation up one cell
+            opponents.forEach((opp) => {
+              if (checkLinePotential(opp) >= 10000) {
+                utility -= 15000; // Prevent suicidal placements
+              }
+            });
+            y = tempY; // Restore state
+          }
         }
       });
 
@@ -2231,6 +2252,23 @@ export default function App() {
         bestMove = move;
       }
     });
+
+    console.log(
+      `AI evaluated ${validMoves.length} moves, selected:`,
+      bestMove,
+      "with utility:",
+      highestUtility,
+    );
+    console.log("Reasoning Breakdown:");
+    console.log("- Valid Moves Count:", validMoves.length);
+    console.log("- Evaluated Positions per Move:", finalPositions.length);
+    console.log("- Variables:", {
+      aiPiece,
+      aiBehavior,
+      gameMode,
+      opponents,
+    });
+    console.log("- Possible moves: ", validMoves);
 
     return bestMove;
   };
@@ -3322,9 +3360,18 @@ export default function App() {
                       Turn
                     </p>
                     <div
-                      className={`text-6xl font-black transition-colors ${currentPlayer === "X" ? "text-cyan-400" : currentPlayer === "O" ? "text-rose-400" : currentPlayer === "T" ? "text-emerald-400" : "text-amber-400"} drop-shadow-md`}
+                      className={`text-6xl flex justify-center items-center transition-colors drop-shadow-md mb-1`}
                     >
-                      {currentPlayer}
+                      {
+                        <img
+                          src={`/icons/${currentPlayer}.svg`}
+                          alt={currentPlayer}
+                          style={{
+                            width: `48px`,
+                            height: `48px`,
+                          }}
+                        />
+                      }
                     </div>
                     {extraTurns > 0 && (
                       <div className="mt-3 inline-block px-3 py-1 bg-emerald-500/20 text-emerald-400 rounded-full text-xs font-bold border border-emerald-500/30 animate-pulse">
