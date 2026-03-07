@@ -1847,7 +1847,13 @@ export default function App() {
             onClick={() => setAppMode("local_setup")}
             className="p-4 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl border border-slate-700 transition-all hover:scale-105"
           >
-            PLAY LOCALLY (Hotseat)
+            PLAY LOCAL PVP
+          </button>
+          <button
+            onClick={() => setAppMode("multiplayer_setup")}
+            className="p-4 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl border border-slate-700 transition-all hover:scale-105"
+          >
+            PLAY ONLINE
           </button>
           <button
             onClick={() => setAppMode("campaign_select")}
@@ -1859,7 +1865,7 @@ export default function App() {
             onClick={() => setAppMode("solo_setup")}
             className="p-4 bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-300 font-bold rounded-xl border border-emerald-500/50 transition-all hover:scale-105"
           >
-            PLAY SOLO (Puzzle Mode)
+            PLAY SOLO
           </button>
           <button
             onClick={() => {
@@ -1869,12 +1875,6 @@ export default function App() {
             className="p-4 bg-amber-600/20 hover:bg-amber-600/40 text-amber-300 font-bold rounded-xl border border-amber-500/50 transition-all hover:scale-105"
           >
             LEVEL / CAMPAIGN EDITOR
-          </button>
-          <button
-            onClick={() => setAppMode("multiplayer_setup")}
-            className="p-4 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl border border-slate-700 transition-all hover:scale-105"
-          >
-            PLAY ONLINE
           </button>
         </div>
       </div>
@@ -1887,9 +1887,7 @@ export default function App() {
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4">
         <div className="bg-slate-900 border border-slate-800 p-8 rounded-2xl max-w-md w-full shadow-2xl flex flex-col gap-6">
           <h2 className="text-2xl font-black text-white">
-            {appMode === "local_setup"
-              ? "LOCAL MATCH CONFIG"
-              : "SOLO PUZZLE CONFIG"}
+            {appMode === "local_setup" ? "LOCAL MATCH CONFIG" : "SOLO CONFIG"}
           </h2>
 
           <div>
