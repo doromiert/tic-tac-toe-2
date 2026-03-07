@@ -1087,7 +1087,6 @@ export default function App() {
     if (isBotActive && currentPlayer !== "X" && !gameOver) {
       if (isBotActive && currentPlayer !== "X" && !gameOver) {
         const timer = setTimeout(() => {
-          // Example of passing parameters based on a level goal or hardcoded state
           const move = getProceduralMove(
             board,
             currentPlayer,
@@ -2645,29 +2644,34 @@ export default function App() {
     gameMode,
     activePlayers = ["X", "O"],
   ) => {
-    let finalPositions = [];
+    // --- 1. MEMORY & PERSONALITY INITIALIZATION ---
     globalThis.aiMemories = globalThis.aiMemories || {};
     if (!globalThis.aiMemories[aiPiece]) {
+      // Generate randomized personality traits for this specific AI slot
       globalThis.aiMemories[aiPiece] = {
+        aggressiveness: 0.5 + Math.random() * 0.5, // 0.5 to 1.0
+        defensiveness: 0.5 + Math.random() * 0.5, // 0.5 to 1.0
+        riskiness: Math.random(), // 0.0 to 1.0
+        fearOfMachines: Math.random(), // 0.0 to 1.0
+        errorProne: Math.random(), // 0.0 to 1.0
+        curiosity: Math.random(), // 0.0 to 1.0
         blockedCount: 0,
         strategy: aiBehavior,
         lastTargets: [],
         playerAggression: 0,
-        playerComboTendency: 0,
       };
     }
-    const memory = globalThis.aiMemories[aiPiece];
-    const opponentsList = activePlayers.filter((p) => p !== aiPiece);
 
-    // Continuous On-The-Fly Player Profiling
+    const memory = globalThis.aiMemories[aiPiece];
+    const opponents = activePlayers.filter((p) => p !== aiPiece);
+
+    // --- 2. DYNAMIC PROFILING (Modified by Curiosity) ---
     let oppPieceCount = 0;
     let oppCenterDistSum = 0;
 
-    // Analyze board state to dynamically adjust strategy this exact turn
     for (let y = 0; y < rows; y++) {
       for (let x = 0; x < cols; x++) {
-        const cell = board[y][x];
-        if (cell.piece && opponentsList.includes(cell.piece)) {
+        if (board[y][x].piece && opponents.includes(board[y][x].piece)) {
           oppPieceCount++;
           oppCenterDistSum +=
             Math.abs(x - Math.floor(cols / 2)) +
@@ -2676,43 +2680,43 @@ export default function App() {
       }
     }
 
-    // Determine if player plays centrally (aggressive/combo) or edges (defensive/scattered)
     const avgOppDist = oppPieceCount > 0 ? oppCenterDistSum / oppPieceCount : 0;
-    memory.playerAggression = avgOppDist < cols / 4 ? 1.5 : 0.8;
+    let currentBoardAggression = avgOppDist < cols / 4 ? 1.5 : 0.8;
 
-    // Detect if AI was blocked on its last moves
+    // High curiosity means the AI adapts to your playstyle faster
+    memory.playerAggression =
+      memory.playerAggression * (1 - memory.curiosity) +
+      currentBoardAggression * memory.curiosity;
+
     let recentBlocks = 0;
-    memory.lastTargets.forEach((target) => {
-      if (target.y < rows && target.x < cols) {
-        const cell = board[target.y][target.x];
-        if (cell.piece && opponentsList.includes(cell.piece)) {
-          recentBlocks++;
-        }
+    memory.lastTargets.forEach((t) => {
+      if (
+        t.y < rows &&
+        t.x < cols &&
+        board[t.y][t.x].piece &&
+        opponents.includes(board[t.y][t.x].piece)
+      ) {
+        recentBlocks++;
       }
     });
-
-    // Decay blocked count slowly (0.8 multiplier), add new blocks instantly
     memory.blockedCount = memory.blockedCount * 0.8 + recentBlocks;
 
-    // Shift strategy continuously based on float thresholds
     if (memory.blockedCount > 2.5) memory.strategy = "defensive_attrition";
     else if (memory.playerAggression > 1.2) memory.strategy = "combo_baiting";
     else memory.strategy = aiBehavior;
 
+    // --- 3. VALID MOVES (Blind spots removed) ---
     let validMoves = [];
     for (let y = 0; y < rows; y++) {
       for (let x = 0; x < cols; x++) {
         const cell = board[y][x];
+        // SUPERBOT: It can now click ON machines (dup, rotators, movers) to use them.
         if (
-          cell.type !== "rot_cw" &&
-          cell.type !== "rot_ccw" &&
           cell.type !== "void" &&
           cell.type !== "locked_mech" &&
           !cell.mechanicalLock &&
-          cell.type !== "dup" &&
-          cell.type !== "neutral" &&
-          cell.type !== "locked_letter" &&
           cell.type !== "trash" &&
+          (cell.type !== "locked_letter" || cell.unlocked) &&
           !cell.piece
         ) {
           validMoves.push({ x, y });
@@ -2721,327 +2725,294 @@ export default function App() {
     }
 
     if (validMoves.length === 0) return null;
-    if (gameMode === "pulse_blitz" && Math.random() < 0.2) return null;
 
-    let bestMove = null;
-    let highestUtility = -Infinity;
-    const opponents = activePlayers.filter((p) => p !== aiPiece);
+    // Pulse Blitz Error Logic (Based on errorProne trait and difficulty)
+    let diffMult =
+      difficulty === "hard" ? 0.2 : difficulty === "normal" ? 0.5 : 1.0;
+    if (
+      gameMode === "pulse_blitz" &&
+      Math.random() < 0.15 * memory.errorProne * diffMult
+    )
+      return null;
 
-    const getGravityY = (startX, startY) => {
-      let finalY = startY;
-      const blockingTypes = [
-        "void",
-        "locked_mech",
-        "locked_letter",
-        "rot_cw",
-        "rot_ccw",
-        "dup",
-        "neutral",
+    // --- 4. TACTICAL HEURISTIC ENGINE ---
+    const checkLinePotential = (x, y, pieceToCheck, b) => {
+      let score = 0;
+      let activeThreats = 0;
+      let comboPotential = 0;
+      const dirs = [
+        [1, 0],
+        [0, 1],
+        [1, 1],
+        [1, -1],
       ];
-      while (finalY + 1 < rows) {
-        let current = board[finalY][startX];
-        let below = board[finalY + 1][startX];
-        if (current.walls?.b) break;
-        if (
-          !below.piece &&
-          !below.mechanicalLock &&
-          !blockingTypes.includes(below.type)
-        ) {
-          finalY++;
-        } else {
-          break;
+
+      dirs.forEach(([dx, dy]) => {
+        let count = 1;
+        let openEnds = 0;
+        let spaceAhead = 0;
+
+        // Forward Check
+        let cx = x + dx,
+          cy = y + dy;
+        while (cx >= 0 && cx < cols && cy >= 0 && cy < rows) {
+          if (b[cy][cx].piece === pieceToCheck) count++;
+          else if (!b[cy][cx].piece && b[cy][cx].type !== "void") {
+            openEnds++;
+            let tx = cx,
+              ty = cy,
+              tempSpace = 0;
+            while (
+              tx >= 0 &&
+              tx < cols &&
+              ty >= 0 &&
+              ty < rows &&
+              !b[ty][tx].piece &&
+              b[ty][tx].type !== "void" &&
+              tempSpace < 3
+            ) {
+              tempSpace++;
+              tx += dx;
+              ty += dy;
+            }
+            spaceAhead += tempSpace;
+            break;
+          } else break;
+          cx += dx;
+          cy += dy;
         }
-      }
-      return finalY;
+
+        // Backward Check
+        cx = x - dx;
+        cy = y - dy;
+        while (cx >= 0 && cx < cols && cy >= 0 && cy < rows) {
+          if (b[cy][cx].piece === pieceToCheck) count++;
+          else if (!b[cy][cx].piece && b[cy][cx].type !== "void") {
+            openEnds++;
+            let tx = cx,
+              ty = cy,
+              tempSpace = 0;
+            while (
+              tx >= 0 &&
+              tx < cols &&
+              ty >= 0 &&
+              ty < rows &&
+              !b[ty][tx].piece &&
+              b[ty][tx].type !== "void" &&
+              tempSpace < 3
+            ) {
+              tempSpace++;
+              tx -= dx;
+              ty -= dy;
+            }
+            spaceAhead += tempSpace;
+            break;
+          } else break;
+          cx -= dx;
+          cy -= dy;
+        }
+
+        if (count >= 5)
+          score += 5000000; // Game winning/saving line
+        else if (count === 4) {
+          score += 1000000;
+          comboPotential += 2;
+        } else if (count === 3 && openEnds > 0) {
+          score += 100000;
+          activeThreats++;
+          if (openEnds === 2) score += 150000;
+        } else if (count === 3 && openEnds === 0) score += 1000;
+        else if (count === 2 && openEnds > 0) {
+          score += 500;
+          if (openEnds === 2) {
+            score += 2000;
+            activeThreats++;
+          }
+        }
+
+        // High Riskiness trait massively boosts the value of preparing open runways
+        if (count >= 2 && spaceAhead >= 2) score += 25000 * memory.riskiness;
+        if (count >= 3 && spaceAhead >= 1) score += 150000 * memory.riskiness;
+      });
+
+      if (activeThreats >= 2) score += 800000; // Simultaneous threats (Fork)
+      if (comboPotential >= 1) score += 300000;
+      return score;
     };
+
+    // --- 5. SIMULATION LOOP ---
+    let moveUtilities = [];
 
     validMoves.forEach((move) => {
       let utility = 0;
-      let evaluatedPositions = [];
 
-      let actualY =
-        gameMode === "cascade" ? getGravityY(move.x, move.y) : move.y;
-      evaluatedPositions.push({ x: move.x, y: actualY });
+      // THE CORE: Run the headless engine
+      // (Ensure simulateTurn is available in the scope before this function)
+      let simResult = simulateTurn(
+        move.x,
+        move.y,
+        aiPiece,
+        board,
+        activePlayers,
+        cols,
+        rows,
+        gameMode,
+      );
+      let simBoard = simResult.board;
 
-      if (gameMode === "mirror_protocol") {
-        let mx = cols - 1 - move.x;
-        if (mx >= 0 && mx < cols && mx !== move.x) {
-          let mCell = board[move.y][mx];
-          if (
-            !mCell.piece &&
-            !mCell.mechanicalLock &&
-            mCell.type !== "void" &&
-            mCell.type !== "locked_mech" &&
-            mCell.type !== "locked_letter"
-          ) {
-            let actualMirrorY =
-              gameMode === "cascade" ? getGravityY(mx, move.y) : move.y;
-            evaluatedPositions.push({ x: mx, y: actualMirrorY });
+      let newAiPositions = [];
+      let oppPiecesLost = 0;
+      let aiPiecesGained = 0;
+
+      // Delta extraction
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          let oldCell = board[r][c];
+          let newCell = simBoard[r][c];
+
+          if (oldCell.piece !== newCell.piece) {
+            if (newCell.piece === aiPiece) {
+              newAiPositions.push({ x: c, y: r });
+              aiPiecesGained++;
+            }
+            if (
+              oldCell.piece &&
+              opponents.includes(oldCell.piece) &&
+              newCell.piece !== oldCell.piece
+            ) {
+              oppPiecesLost++;
+            }
+          }
+
+          if (newCell.isTarget && newCell.piece === aiPiece) utility += 50;
+
+          // Fear of Machines personality trait
+          if (newCell.piece === aiPiece && memory.fearOfMachines > 0.5) {
+            const isMachine = (type) =>
+              ["dup", "rot_cw", "rot_ccw", "mov", "switch"].includes(type);
+            [
+              [0, 1],
+              [1, 0],
+              [0, -1],
+              [-1, 0],
+            ].forEach(([dx, dy]) => {
+              let nx = c + dx,
+                ny = r + dy;
+              if (
+                nx >= 0 &&
+                nx < cols &&
+                ny >= 0 &&
+                ny < rows &&
+                isMachine(simBoard[ny][nx].type)
+              ) {
+                utility -= 500 * memory.fearOfMachines;
+              }
+            });
           }
         }
       }
 
-      // --- NEW: Predictive Chain Engine (The Menace Protocol) ---
-      // finalPositions bridged to evaluatedPositions to prevent utility zeroing.
-      let finalPositions = [...evaluatedPositions];
+      // Assassination & Duplication Scaling
+      utility += oppPiecesLost * 800; // Replaced an opponent!
+      if (aiPiecesGained > 1) {
+        utility += (aiPiecesGained - 1) * 20000; // Hit a duplicator!
+      }
+      if (aiPiecesGained === 0 && board[move.y][move.x].piece !== aiPiece) {
+        utility -= 5000; // Suicide (hit trash)
+      }
 
-      // --- TACTICAL EVALUATION ---
-      finalPositions.forEach((pos) => {
-        let { x, y, isOverwrite } = pos;
-        const targetCell = board[y][x];
+      // Trait Multipliers
+      let aggroMod =
+        memory.aggressiveness *
+        (memory.strategy === "aggressive"
+          ? 1.5
+          : memory.strategy === "defensive_attrition"
+            ? 0.5
+            : 1.0);
+      let defMod =
+        memory.defensiveness *
+        (memory.strategy === "defensive"
+          ? 1.5
+          : memory.strategy === "combo_baiting"
+            ? 0.8
+            : 1.0);
+      defMod *= 1 + memory.blockedCount * 0.15;
 
-        let actualPiece = aiPiece;
-        if (targetCell.type === "flip" || targetCell.flipMod)
-          actualPiece = opponents[0]; // Simplified flip logic for >2 bots
-        else if (targetCell.type === "trash") actualPiece = null;
+      // Evaluate Offensive Position (Where did our pieces end up?)
+      newAiPositions.forEach((pos) => {
+        utility +=
+          checkLinePotential(pos.x, pos.y, aiPiece, simBoard) * aggroMod;
 
-        // MENACE LOGIC: Weaponize overwrites
-        if (isOverwrite) {
-          if (opponents.includes(targetCell.piece))
-            utility += 800; // Assassinate opponent
-          else if (targetCell.piece === aiPiece) utility -= 500; // Avoid suicide
-        }
-
-        const centerDistX = Math.abs(x - Math.floor(cols / 2));
-        const centerDistY = Math.abs(y - Math.floor(rows / 2));
+        // Base centering
+        const centerDistX = Math.abs(pos.x - Math.floor(cols / 2));
+        const centerDistY = Math.abs(pos.y - Math.floor(rows / 2));
         utility += (cols - centerDistX) * 2;
         utility += (rows - centerDistY) * 2;
+      });
 
-        if (["rot_cw", "rot_ccw"].includes(targetCell.type)) utility += 15;
-
-        if (targetCell.isTarget) {
-          if (actualPiece === aiPiece) utility += 50;
-          else if (opponents.includes(actualPiece)) utility -= 50;
-        }
-
-        if (actualPiece === null) {
-          utility -= 50;
-          return;
-        }
-
-        const checkLinePotential = (pieceToCheck) => {
-          let score = 0;
-          let activeThreats = 0;
-          let comboPotential = 0;
-          const dirs = [
-            [1, 0],
-            [0, 1],
-            [1, 1],
-            [1, -1],
-          ];
-          dirs.forEach(([dx, dy]) => {
-            let count = 1;
-            let openEnds = 0;
-
-            let cx = x + dx,
-              cy = y + dy;
-            while (cx >= 0 && cx < cols && cy >= 0 && cy < rows) {
-              if (board[cy][cx].piece === pieceToCheck) count++;
-              else if (!board[cy][cx].piece && board[cy][cx].type !== "void") {
-                openEnds++;
-                break;
-              } else break;
-              cx += dx;
-              cy += dy;
+      // Evaluate Defensive Global Threat (Did we leave the opponent with a win condition?)
+      let maxOppThreat = 0;
+      opponents.forEach((opp) => {
+        for (let ry = 0; ry < rows; ry++) {
+          for (let cx = 0; cx < cols; cx++) {
+            if (simBoard[ry][cx].piece === opp) {
+              let threat = checkLinePotential(cx, ry, opp, simBoard);
+              if (threat > maxOppThreat) maxOppThreat = threat;
             }
-
-            cx = x - dx;
-            cy = y - dy;
-            while (cx >= 0 && cx < cols && cy >= 0 && cy < rows) {
-              if (board[cy][cx].piece === pieceToCheck) count++;
-              else if (!board[cy][cx].piece && board[cy][cx].type !== "void") {
-                openEnds++;
-                break;
-              } else break;
-              cx -= dx;
-              cy -= dy;
-            }
-
-            // Exponential threat scaling to strictly prioritize 4-combos
-            if (count >= 5) {
-              score += 5000000; // Unstoppable Win / Block Win
-            } else if (count === 4) {
-              score += 1000000; // Lethal 4-line
-              comboPotential += 2;
-            } else if (count === 3 && openEnds > 0) {
-              score += 100000; // Extremely dangerous open 3
-              activeThreats++;
-              if (openEnds === 2) score += 150000; // Uncapped threat
-            } else if (count === 3 && openEnds === 0) {
-              score += 1000; // Dead 3-line
-            } else if (count === 2 && openEnds > 0) {
-              score += 500;
-              if (openEnds === 2) {
-                score += 2000;
-                activeThreats++;
-              }
-            }
-          });
-
-          // Multi-axis Combo & Fork Detection
-          if (activeThreats >= 2) score += 800000; // Simultaneous open lines (Fork)
-          if (comboPotential >= 1) score += 300000;
-
-          return score;
-
-          // Combo & Fork Resolution
-          if (activeThreats >= 2) {
-            score += 30000; // Simultaneous completions (Fork/Combo)
-          }
-          if (comboPotential >= 1) {
-            score += memory.strategy === "combo_baiting" ? 40000 : 10000;
-          }
-
-          return score;
-        };
-
-        let aggroMod = 1.0;
-        let defMod = 1.2;
-
-        // Continuous Strategy Application
-        if (memory.strategy === "combo_baiting") {
-          aggroMod = 0.8;
-          defMod = 1.5 * memory.playerAggression;
-        } else if (memory.strategy === "defensive_attrition") {
-          aggroMod = 0.4;
-          defMod = 4.0; // Absolute priority on blocking
-        } else if (memory.strategy === "aggressive") {
-          aggroMod = 1.8;
-          defMod = 1.0;
-        } else if (memory.strategy === "defensive") {
-          aggroMod = 0.8;
-          defMod = 2.0;
-        }
-
-        // Apply real-time threat multiplier based on rolling memory
-        defMod *= 1 + memory.blockedCount * 0.15;
-
-        if (actualPiece === aiPiece) {
-          utility += checkLinePotential(aiPiece) * aggroMod;
-          opponents.forEach((opp) => {
-            utility += checkLinePotential(opp) * defMod;
-          });
-
-          // 3-Turn Combo Anticipation Heuristic
-          let futureComboUtility = 0;
-          const shadowDirs = [
-            [1, 0],
-            [0, 1],
-            [1, 1],
-            [1, -1],
-          ];
-          const originalPiece = targetCell.piece;
-          targetCell.piece = actualPiece; // Project move
-
-          shadowDirs.forEach(([dx, dy]) => {
-            [1, -1].forEach((dirMult) => {
-              let sx = x + dx * dirMult;
-              let sy = y + dy * dirMult;
-              let lineLength = 1;
-
-              // Traverse to the end of the newly projected line
-              while (
-                sx >= 0 &&
-                sx < cols &&
-                sy >= 0 &&
-                sy < rows &&
-                board[sy][sx].piece === actualPiece
-              ) {
-                sx += dx * dirMult;
-                sy += dy * dirMult;
-                lineLength++;
-              }
-
-              // Evaluate adjacent empty cells at the end of the projected line
-              if (
-                sx >= 0 &&
-                sx < cols &&
-                sy >= 0 &&
-                sy < rows &&
-                !board[sy][sx].piece &&
-                board[sy][sx].type !== "void"
-              ) {
-                let spaceAhead = 0;
-                let tx = sx + dx * dirMult;
-                let ty = sy + dy * dirMult;
-
-                // Calculate runway (how many consecutive empty spaces exist to complete the combo)
-                while (
-                  tx >= 0 &&
-                  tx < cols &&
-                  ty >= 0 &&
-                  ty < rows &&
-                  !board[ty][tx].piece &&
-                  board[ty][tx].type !== "void"
-                ) {
-                  spaceAhead++;
-                  tx += dx * dirMult;
-                  ty += dy * dirMult;
-                }
-
-                // Exponential reward for setting up guaranteed future combos
-                if (lineLength >= 2 && spaceAhead >= 2)
-                  futureComboUtility += 25000;
-                if (lineLength >= 3 && spaceAhead >= 1)
-                  futureComboUtility += 150000;
-                if (lineLength >= 4 && spaceAhead >= 1)
-                  futureComboUtility += 600000;
-              }
-            });
-          });
-
-          targetCell.piece = originalPiece; // Revert projection
-          utility += futureComboUtility * aggroMod;
-
-          // Cascade vulnerability scan: Does this move create a stepping stone for the opponent?
-          if (gameMode === "cascade" && y > 0) {
-            let tempY = y;
-            y = y - 1;
-            opponents.forEach((opp) => {
-              if (checkLinePotential(opp) >= 10000) {
-                utility -= 35000; // Absolute veto for suicidal placements
-              }
-            });
-            y = tempY;
           }
         }
       });
 
-      if (difficulty === "drunk") utility += Math.random() * 1000;
-      else if (difficulty === "easy") utility += Math.random() * 200;
-      else if (difficulty === "normal") utility += Math.random() * 40;
+      // Subtract opponent's highest remaining threat from our utility
+      utility -= maxOppThreat * defMod;
 
-      if (utility > highestUtility) {
-        highestUtility = utility;
-        bestMove = move;
-      }
+      // Minor noise for organic feel based on difficulty
+      if (difficulty === "drunk") utility += Math.random() * 2000;
+      else if (difficulty === "easy") utility += Math.random() * 500;
+      else if (difficulty === "normal") utility += Math.random() * 100;
+
+      moveUtilities.push({ move, utility });
     });
 
-    console.log(
-      `AI evaluated ${validMoves.length} moves, selected:`,
-      bestMove,
-      "with utility:",
-      highestUtility,
-    );
-    console.log("Reasoning Breakdown:");
-    console.log("- Valid Moves Count:", validMoves.length);
-    console.log("- Evaluated Positions per Move:", finalPositions.length);
-    console.log("- Variables:", {
-      aiPiece,
-      aiBehavior,
-      gameMode,
-      opponents,
-    });
-    console.log("- Possible moves: ", validMoves);
+    // --- 6. ERROR PRONE SELECTION ---
+    moveUtilities.sort((a, b) => b.utility - a.utility);
 
-    // Update memory with the chosen vector for next turn's block analysis
-    if (bestMove) {
-      memory.lastTargets.push({ x: bestMove.x, y: bestMove.y });
-      if (memory.lastTargets.length > 3) memory.lastTargets.shift(); // Keep rolling window
+    let selectedMove = moveUtilities[0].move;
+    let highestUtility = moveUtilities[0].utility;
+
+    // Sometimes the AI just whiffs it, depending on errorProne trait + game difficulty
+    if (
+      Math.random() < memory.errorProne * diffMult &&
+      moveUtilities.length > 3
+    ) {
+      let rank =
+        Math.floor(Math.random() * Math.min(4, moveUtilities.length - 1)) + 1;
+      selectedMove = moveUtilities[rank].move;
+      highestUtility = moveUtilities[rank].utility;
     }
 
-    return bestMove;
+    console.log(`[AI ${aiPiece}] Profile:`, {
+      aggressiveness: memory.aggressiveness.toFixed(2),
+      defensiveness: memory.defensiveness.toFixed(2),
+      riskiness: memory.riskiness.toFixed(2),
+      fear: memory.fearOfMachines.toFixed(2),
+      error: memory.errorProne.toFixed(2),
+    });
+    console.log(
+      `[AI ${aiPiece}] Selected:`,
+      selectedMove,
+      "Utility:",
+      highestUtility,
+    );
+
+    if (selectedMove) {
+      memory.lastTargets.push({ x: selectedMove.x, y: selectedMove.y });
+      if (memory.lastTargets.length > 3) memory.lastTargets.shift();
+    }
+
+    return selectedMove;
   };
+
   // --- MAIN GAME UI ---
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-cyan-500/30 flex flex-col h-screen overflow-hidden select-none">
