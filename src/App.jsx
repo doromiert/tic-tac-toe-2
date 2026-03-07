@@ -1008,6 +1008,22 @@ export default function App() {
 
     const processReactions = (queue) => {
       let iters = 0;
+      const isBlocker = (c) => {
+        if (!c) return true;
+        const hardBlockers = [
+          "dup",
+          "rot_cw",
+          "rot_ccw",
+          "neutral",
+          "void",
+          "trash",
+        ];
+        if (hardBlockers.includes(c.type)) return true;
+        if (c.type === "locked_letter" && !c.unlocked) return true;
+        if (c.piece) return true; // Player symbols/pieces (alive or dead)
+        return false;
+      };
+
       while (queue.length > 0 && iters < MAX_ITERATIONS) {
         iters++;
         let { x, y, piece, overwrite, rotation } = queue.shift();
@@ -1017,32 +1033,30 @@ export default function App() {
         let cx = x,
           cy = y;
 
+        // Trace Zap Path (Pile up logic)
         if (b[cy][cx].type === "zap") {
           while (true) {
-            let dir = b[cy][cx].dir;
+            let current = b[cy][cx];
+            let dir = current.dir;
             let nx = cx + (dir === "r" ? 1 : dir === "l" ? -1 : 0);
             let ny = cy + (dir === "d" ? 1 : dir === "u" ? -1 : 0);
+
             if (ny < 0 || ny >= rows || nx < 0 || nx >= cols) break;
-            if (b[ny][nx].type === "void") break;
-
-            let blocked = false;
-            if (dir === "r" && b[cy][cx].walls.r) blocked = true;
-            if (dir === "l" && b[ny][nx].walls.r) blocked = true;
-            if (dir === "d" && b[cy][cx].walls.b) blocked = true;
-            if (dir === "u" && b[ny][nx].walls.b) blocked = true;
-
             let nextCell = b[ny][nx];
-            if (
-              blocked ||
-              (nextCell.type === "locked_letter" && !nextCell.unlocked)
-            )
-              break;
 
-            if (nextCell.piece) {
-              if (overwrite && nextCell.dead) {
-                cx = nx;
-                cy = ny;
-              }
+            let wallBlocked =
+              (dir === "r" && current.walls.r) ||
+              (dir === "l" && nextCell.walls.r) ||
+              (dir === "d" && current.walls.b) ||
+              (dir === "u" && nextCell.walls.b);
+
+            // Stop if hitting a wall or any blocker (unless we have overwrite power)
+            if (wallBlocked || (isBlocker(nextCell) && !overwrite)) break;
+
+            // Allow Duplicator (overwrite) to step onto a dead/alive piece if it's the target
+            if (overwrite && nextCell.piece) {
+              cx = nx;
+              cy = ny;
               break;
             }
 
@@ -1053,19 +1067,24 @@ export default function App() {
         }
 
         let cell = b[cy][cx];
-        if (cell.type === "locked_letter" && !cell.unlocked) continue;
+
+        // Final check: If we landed on a blocker and don't have overwrite, we can't place
+        if (!overwrite && isBlocker(cell)) continue;
+
+        // Locked/Hard blocks are impassable regardless of overwrite
         if (
-          cell.type === "dup" ||
-          cell.type === "neutral" ||
-          cell.type === "void"
+          cell.type === "void" ||
+          (cell.type === "locked_letter" && !cell.unlocked)
         )
+          continue;
+        // Dup/Rotators/Neutral are actors, not containers
+        if (["dup", "rot_cw", "rot_ccw", "neutral"].includes(cell.type))
           continue;
 
         if (cell.flipMod || cell.type === "flip") {
           let idx = activePlayers.indexOf(piece);
           piece = activePlayers[(idx + 1) % activePlayers.length];
         }
-        if (cell.type === "trash") continue;
 
         const checkDup = (dx, dy, targetDir, pushX, pushY) => {
           let neighbor = b[cy + dy]?.[cx + dx];
@@ -1085,8 +1104,9 @@ export default function App() {
         checkDup(0, 1, "d", 0, 2);
         checkDup(0, -1, "u", 0, -2);
 
-        if (cell.piece && !overwrite) continue;
+        if (cell.type === "trash") continue;
 
+        // Handle Overwrite (Duplicator eating pieces)
         if (cell.piece && cell.dead && overwrite && cell.lineId) {
           linesToErase.add(cell.lineId);
         }
@@ -1105,175 +1125,196 @@ export default function App() {
           );
         }
       }
+      console.log(
+        `Processed reactions in ${iters} iterations, erasing ${linesToErase.size} lines.`,
+      );
     };
 
     processReactions(q);
 
-    let moverQueue = [];
-    b.forEach((row, y) => {
-      row.forEach((cell, x) => {
-        if (cell.type === "mov" && cell.piece && !cell.dead) {
-          let nx = x + (cell.dir === "r" ? 1 : cell.dir === "l" ? -1 : 0);
-          let ny = y + (cell.dir === "d" ? 1 : cell.dir === "u" ? -1 : 0);
-          let blocked = false;
-          if (cell.dir === "r" && cell.walls.r) blocked = true;
-          if (cell.dir === "l" && nx >= 0 && b[ny][nx].walls.r) blocked = true;
-          if (cell.dir === "d" && cell.walls.b) blocked = true;
-          if (cell.dir === "u" && ny >= 0 && b[ny][nx].walls.b) blocked = true;
-          // Stop if next cell is a mover that is blocked or will not move further
-          if (
-            !blocked &&
-            nx >= 0 &&
-            nx < cols &&
-            ny >= 0 &&
-            ny < rows &&
-            b[ny][nx].type === "mov"
-          ) {
-            let nextMov = b[ny][nx];
-            let nnx =
-              nx + (nextMov.dir === "r" ? 1 : nextMov.dir === "l" ? -1 : 0);
-            let nny =
-              ny + (nextMov.dir === "d" ? 1 : nextMov.dir === "u" ? -1 : 0);
-            let nextBlocked = false;
-            if (nextMov.dir === "r" && nextMov.walls.r) nextBlocked = true;
-            if (nextMov.dir === "l" && nnx >= 0 && b[nny][nnx].walls.r)
-              nextBlocked = true;
-            if (nextMov.dir === "d" && nextMov.walls.b) nextBlocked = true;
-            if (nextMov.dir === "u" && nny >= 0 && b[nny][nnx].walls.b)
-              nextBlocked = true;
-            if (
-              nextBlocked ||
-              nnx < 0 ||
-              nnx >= cols ||
-              nny < 0 ||
-              nny >= rows ||
-              b[nny][nnx].type === "void"
-            ) {
-              blocked = true;
-            }
-          }
-          if (
-            !blocked &&
-            nx >= 0 &&
-            nx < cols &&
-            ny >= 0 &&
-            ny < rows &&
-            b[ny][nx].type !== "void"
-          ) {
-            moverQueue.push({
-              from: { x, y },
-              to: { x: nx, y: ny },
-              piece: cell.piece,
-              rotation: cell.rotation || 0,
-              isRot: false,
-            });
-          }
-        }
-        if ((cell.type === "rot_cw" || cell.type === "rot_ccw") && !cell.dead) {
-          let isCW = cell.type === "rot_cw";
-          const orthogonalDirs = [
-            [0, -1],
-            [1, 0],
-            [0, 1],
-            [-1, 0],
-          ];
+    let machineChanged = true;
+    let machineIters = 0;
+    const MAX_MACHINE_ITERS = 10;
 
-          orthogonalDirs.forEach(([dx, dy]) => {
-            let px = x + dx,
-              py = y + dy;
-            if (
-              px >= 0 &&
-              px < cols &&
-              py >= 0 &&
-              py < rows &&
-              b[py][px].type !== "void"
-            ) {
-              let pCell = b[py][px];
-              if (pCell.piece && !pCell.dead) {
-                let nx = x + (isCW ? -dy : dy);
-                let ny = y + (isCW ? dx : -dx);
-                if (
-                  nx >= 0 &&
-                  nx < cols &&
-                  ny >= 0 &&
-                  ny < rows &&
-                  b[ny][nx].type !== "void"
-                ) {
-                  let t = b[ny][nx];
-                  if (
-                    !t.piece &&
-                    !t.type.startsWith("locked") &&
-                    t.type !== "dup" &&
-                    t.type !== "neutral"
-                  ) {
-                    moverQueue.push({
-                      from: { x: px, y: py },
-                      to: { x: nx, y: ny },
-                      piece: pCell.piece,
-                      rotation: pCell.rotation || 0,
-                      isRot: true,
-                      isCW,
-                    });
-                  }
+    while (machineChanged && machineIters < MAX_MACHINE_ITERS) {
+      machineChanged = false;
+      machineIters++;
+
+      const priorityTiers = [["rot_cw"], ["rot_ccw"], ["mov"]];
+
+      priorityTiers.forEach((tier) => {
+        let moverQueue = [];
+        b.forEach((row, y) => {
+          row.forEach((cell, x) => {
+            if (!tier.includes(cell.type)) return;
+
+            // Handle Movers: Respect occupancy (no eating)
+            if (cell.type === "mov" && cell.piece && !cell.dead) {
+              let nx = x + (cell.dir === "r" ? 1 : cell.dir === "l" ? -1 : 0);
+              let ny = y + (cell.dir === "d" ? 1 : cell.dir === "u" ? -1 : 0);
+
+              let wallBlocked =
+                (cell.dir === "r" && cell.walls.r) ||
+                (cell.dir === "l" && nx >= 0 && b[ny][nx].walls.r) ||
+                (cell.dir === "d" && cell.walls.b) ||
+                (cell.dir === "u" && ny >= 0 && b[ny][nx].walls.b);
+
+              if (
+                !wallBlocked &&
+                nx >= 0 &&
+                nx < cols &&
+                ny >= 0 &&
+                ny < rows &&
+                b[ny][nx].type !== "void" &&
+                b[ny][nx].type !== "dup" &&
+                b[ny][nx].type !== "neutral"
+              ) {
+                if (b[ny][nx].type === "locked_letter" && !b[ny][nx].unlocked)
+                  return;
+                let target = b[ny][nx];
+                // Movers only move if the destination is empty
+                if (!target.piece && target.type !== "neutral") {
+                  moverQueue.push({
+                    from: { x, y },
+                    to: { x: nx, y: ny },
+                    piece: cell.piece,
+                    rotation: cell.rotation || 0,
+                    isRot: false,
+                  });
                 }
               }
             }
+
+            // Handle Rotators: Standard logic
+            if (
+              (cell.type === "rot_cw" || cell.type === "rot_ccw") &&
+              !cell.dead
+            ) {
+              let isCW = cell.type === "rot_cw";
+              [
+                [0, -1],
+                [1, 0],
+                [0, 1],
+                [-1, 0],
+              ].forEach(([dx, dy]) => {
+                let px = x + dx,
+                  py = y + dy;
+                if (
+                  px >= 0 &&
+                  px < cols &&
+                  py >= 0 &&
+                  py < rows &&
+                  b[py][px].piece &&
+                  !b[py][px].dead
+                ) {
+                  let nx = x + (isCW ? -dy : dy),
+                    ny = y + (isCW ? dx : -dx);
+                  if (
+                    nx >= 0 &&
+                    nx < cols &&
+                    ny >= 0 &&
+                    ny < rows &&
+                    b[ny][nx].type !== "void"
+                  ) {
+                    let t = b[ny][nx];
+                    if (
+                      !t.piece &&
+                      !t.type.startsWith("locked") &&
+                      t.type !== "dup" &&
+                      t.type !== "neutral"
+                    ) {
+                      moverQueue.push({
+                        from: { x: px, y: py },
+                        to: { x: nx, y: ny },
+                        piece: b[py][px].piece,
+                        rotation: b[py][px].rotation || 0,
+                        isRot: true,
+                        isCW,
+                      });
+                    }
+                  }
+                }
+              });
+            }
           });
-        }
+        });
+
+        if (moverQueue.length === 0) return;
+
+        let uniqueMoves = [];
+        let claimedSources = new Set();
+        moverQueue.forEach((m) => {
+          let sKey = `${m.from.x},${m.from.y}`;
+          if (!claimedSources.has(sKey)) {
+            claimedSources.add(sKey);
+            uniqueMoves.push(m);
+          }
+        });
+
+        uniqueMoves.forEach((m) => {
+          b[m.from.y][m.from.x].piece = null;
+        });
+
+        uniqueMoves.forEach((m) => {
+          let targetRot = m.isRot
+            ? m.rotation + (m.isCW ? 90 : -90)
+            : m.rotation;
+          b[m.to.y][m.to.x].piece = m.piece;
+          b[m.to.y][m.to.x].rotation = targetRot;
+        });
+
+        let reactionQueue = uniqueMoves.map((m) => ({
+          x: m.to.x,
+          y: m.to.y,
+          piece: m.piece,
+          rotation: b[m.to.y][m.to.x].rotation,
+        }));
+        processReactions(reactionQueue);
       });
-    });
 
-    moverQueue.forEach((m) => (b[m.from.y][m.from.x].piece = null));
-
-    let resolved = false;
-    let validMoves = [...moverQueue];
-
-    while (!resolved) {
-      resolved = true;
-      let stillValid = [];
-      let targetCounts = {};
-
-      validMoves.forEach((m) => {
-        let key = `${m.to.x},${m.to.y}`;
-        targetCounts[key] = (targetCounts[key] || 0) + 1;
+      // Handle Duplicators separately at the end of the turn to allow "eating"
+      b.forEach((row, y) => {
+        row.forEach((cell, x) => {
+          if (cell.type === "dup" && cell.piece && !cell.dead) {
+            const neighbors = [
+              [0, -1],
+              [1, 0],
+              [0, 1],
+              [-1, 0],
+            ];
+            neighbors.forEach(([dx, dy]) => {
+              let nx = x + dx,
+                ny = y + dy;
+              if (
+                nx >= 0 &&
+                nx < cols &&
+                ny >= 0 &&
+                ny < rows &&
+                b[ny][nx].type !== "void"
+              ) {
+                let target = b[ny][nx];
+                if (
+                  !target.type.startsWith("locked") &&
+                  target.type !== "neutral"
+                ) {
+                  // Duplicator overwrites existing pieces
+                  target.piece = cell.piece;
+                  target.rotation = cell.rotation || 0;
+                  processReactions([
+                    {
+                      x: nx,
+                      y: ny,
+                      piece: target.piece,
+                      rotation: target.rotation,
+                    },
+                  ]);
+                }
+              }
+            });
+          }
+        });
       });
-
-      validMoves.forEach((m) => {
-        let target = b[m.to.y][m.to.x];
-        let isBlocked =
-          target.piece ||
-          target.type.startsWith("locked") ||
-          target.type === "dup" ||
-          target.type === "neutral" ||
-          target.type === "void";
-        let isCollision = targetCounts[`${m.to.x},${m.to.y}`] > 1;
-
-        if (isBlocked || isCollision) {
-          b[m.from.y][m.from.x].piece = m.piece;
-          b[m.from.y][m.from.x].rotation = m.rotation;
-          resolved = false;
-        } else {
-          stillValid.push(m);
-        }
-      });
-      validMoves = stillValid;
     }
-
-    let newQueue = [];
-    validMoves.forEach((m) => {
-      let targetRot = m.isRot
-        ? (m.rotation || 0) + (m.isCW ? 90 : -90)
-        : m.rotation || 0;
-      newQueue.push({
-        x: m.to.x,
-        y: m.to.y,
-        piece: m.piece,
-        overwrite: false,
-        rotation: targetRot,
-      });
-    });
-
-    if (newQueue.length > 0) processReactions(newQueue);
 
     let tempScores = { ...scores };
     let tempDrawnLines = [...drawnLines];
@@ -2095,103 +2136,6 @@ export default function App() {
 
       // --- NEW: Predictive Chain Engine (The Menace Protocol) ---
       let finalPositions = [];
-
-      evaluatedPositions.forEach((pos) => {
-        let { x, y } = pos;
-        let cell = board[y][x];
-
-        // 1. Trace Zap Logic
-        if (cell.type === "zap") {
-          let cx = x,
-            cy = y;
-          while (true) {
-            let dir = board[cy][cx].dir;
-            let nx = cx + (dir === "r" ? 1 : dir === "l" ? -1 : 0);
-            let ny = cy + (dir === "d" ? 1 : dir === "u" ? -1 : 0);
-            if (ny < 0 || ny >= rows || nx < 0 || nx >= cols) break;
-            if (board[ny][nx].type === "void") break;
-
-            let blocked = false;
-            if (dir === "r" && board[cy][cx].walls.r) blocked = true;
-            if (dir === "l" && board[ny][nx].walls.r) blocked = true;
-            if (dir === "d" && board[cy][cx].walls.b) blocked = true;
-            if (dir === "u" && board[ny][nx].walls.b) blocked = true;
-
-            let nextCell = board[ny][nx];
-            if (
-              blocked ||
-              (nextCell.type === "locked_letter" && !nextCell.unlocked)
-            )
-              break;
-            if (nextCell.piece) {
-              cx = nx;
-              cy = ny;
-              break;
-            }
-
-            cx = nx;
-            cy = ny;
-            if (nextCell.type !== "zap") break;
-          }
-          finalPositions.push({ x: cx, y: cy, isOverwrite: true });
-        }
-        // 2. Trace Mov Logic
-        else if (cell.type === "mov") {
-          let cx = x,
-            cy = y;
-          let iters = 0;
-          while (board[cy][cx].type === "mov" && iters < 10) {
-            iters++;
-            let c = board[cy][cx];
-            let nx = cx + (c.dir === "r" ? 1 : c.dir === "l" ? -1 : 0);
-            let ny = cy + (c.dir === "d" ? 1 : c.dir === "u" ? -1 : 0);
-            let blocked = false;
-            if (c.dir === "r" && c.walls.r) blocked = true;
-            if (c.dir === "l" && nx >= 0 && board[ny][nx].walls.r)
-              blocked = true;
-            if (c.dir === "d" && c.walls.b) blocked = true;
-            if (c.dir === "u" && ny >= 0 && board[ny][nx].walls.b)
-              blocked = true;
-
-            if (
-              blocked ||
-              nx < 0 ||
-              nx >= cols ||
-              ny < 0 ||
-              ny >= rows ||
-              board[ny][nx].type === "void"
-            )
-              break;
-            cx = nx;
-            cy = ny;
-          }
-          finalPositions.push({ x: cx, y: cy, isOverwrite: false });
-        } else {
-          finalPositions.push({ x, y, isOverwrite: false });
-        }
-
-        // 3. Trace Dup Logic
-        const checkDup = (dx, dy, targetDir, pushX, pushY) => {
-          let neighbor = board[y + dy]?.[x + dx];
-          if (neighbor?.type === "dup" && neighbor.dir === targetDir) {
-            let px = x + pushX,
-              py = y + pushY;
-            if (
-              px >= 0 &&
-              px < cols &&
-              py >= 0 &&
-              py < rows &&
-              board[py][px].type !== "void"
-            ) {
-              finalPositions.push({ x: px, y: py, isOverwrite: true });
-            }
-          }
-        };
-        checkDup(1, 0, "r", 2, 0);
-        checkDup(-1, 0, "l", -2, 0);
-        checkDup(0, 1, "d", 0, 2);
-        checkDup(0, -1, "u", 0, -2);
-      });
 
       // --- TACTICAL EVALUATION ---
       finalPositions.forEach((pos) => {
