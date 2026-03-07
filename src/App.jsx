@@ -104,12 +104,17 @@ const simulateTurn = (
 
     // 1. ZAP SLIDING (Only for Zaps)
     if (b[cy][cx].type === "zap") {
+      let visitedZaps = new Set([`${cx},${cy}`]); // <-- NEW: Track visited tiles
       while (true) {
         let dir = b[cy][cx].dir;
         let nx = cx + (dir === "r" ? 1 : dir === "l" ? -1 : 0);
         let ny = cy + (dir === "d" ? 1 : dir === "u" ? -1 : 0);
 
         if (ny < 0 || ny >= rows || nx < 0 || nx >= cols) break;
+
+        // <-- NEW: Loop Detection
+        if (visitedZaps.has(`${nx},${ny}`)) break;
+
         let nextCell = b[ny][nx];
 
         let wallBlocked =
@@ -141,6 +146,7 @@ const simulateTurn = (
           break;
         }
 
+        visitedZaps.add(`${nx},${ny}`); // <-- NEW: Mark as visited
         trails.push({ x1: cx, y1: cy, x2: nx, y2: ny });
         cx = nx;
         cy = ny;
@@ -242,15 +248,19 @@ const simulateTurn = (
           // Clear origin
           cell.piece = null;
           cell.isGhost = false;
-
           // If Mover pushed it onto a Zap, trace that zap too!
           if (b[cy][cx].type === "zap") {
+            let zVisited = new Set([`${cx},${cy}`]); // <-- NEW: Track visited
             while (true) {
               let zDir = b[cy][cx].dir;
               let zx = cx + (zDir === "r" ? 1 : zDir === "l" ? -1 : 0);
               let zy = cy + (zDir === "d" ? 1 : zDir === "u" ? -1 : 0);
 
               if (zy < 0 || zy >= rows || zx < 0 || zx >= cols) break;
+
+              // <-- NEW: Loop Detection
+              if (zVisited.has(`${zx},${zy}`)) break;
+
               let nextCell = b[zy][zx];
 
               let zWallBlocked =
@@ -275,6 +285,7 @@ const simulateTurn = (
 
               if (zWallBlocked || isZBlocker(nextCell)) break;
 
+              zVisited.add(`${zx},${zy}`); // <-- NEW: Mark as visited
               trails.push({ x1: cx, y1: cy, x2: zx, y2: zy });
               cx = zx;
               cy = zy;
@@ -1268,6 +1279,7 @@ export default function App() {
 
         // Trace Zap Path (Pile up logic)
         if (b[cy][cx].type === "zap") {
+          let visitedZaps = new Set([`${cx},${cy}`]); // <-- NEW: Track visited
           while (true) {
             let current = b[cy][cx];
             let dir = current.dir;
@@ -1275,6 +1287,9 @@ export default function App() {
             let ny = cy + (dir === "d" ? 1 : dir === "u" ? -1 : 0);
 
             if (ny < 0 || ny >= rows || nx < 0 || nx >= cols) break;
+
+            // <-- NEW: Loop Detection
+            if (visitedZaps.has(`${nx},${ny}`)) break;
             let nextCell = b[ny][nx];
 
             let wallBlocked =
