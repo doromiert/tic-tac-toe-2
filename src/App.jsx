@@ -1010,17 +1010,20 @@ export default function App() {
       let iters = 0;
       const isBlocker = (c) => {
         if (!c) return true;
-        const hardBlockers = [
+        // Machines are physical obstacles for pieces being moved/zapped
+        const machines = [
           "dup",
           "rot_cw",
           "rot_ccw",
           "neutral",
-          "void",
           "trash",
+          "flip",
+          "switch",
         ];
-        if (hardBlockers.includes(c.type)) return true;
+        if (machines.includes(c.type)) return true;
+        if (c.type === "void") return true;
         if (c.type === "locked_letter" && !c.unlocked) return true;
-        if (c.piece) return true; // Player symbols/pieces (alive or dead)
+        if (c.piece) return true;
         return false;
       };
 
@@ -1050,10 +1053,10 @@ export default function App() {
               (dir === "d" && current.walls.b) ||
               (dir === "u" && nextCell.walls.b);
 
-            // Stop if hitting a wall or any blocker (unless we have overwrite power)
+            // If the very next space is a machine/piece/wall, we stop immediately (pile up)
             if (wallBlocked || (isBlocker(nextCell) && !overwrite)) break;
 
-            // Allow Duplicator (overwrite) to step onto a dead/alive piece if it's the target
+            // If we have overwrite (Dup power), we can land on pieces, but still not machines
             if (overwrite && nextCell.piece) {
               cx = nx;
               cy = ny;
@@ -1062,6 +1065,7 @@ export default function App() {
 
             cx = nx;
             cy = ny;
+            // Zaps only allow sliding if the current tile is a zap tile
             if (nextCell.type !== "zap") break;
           }
         }
@@ -1173,7 +1177,10 @@ export default function App() {
                   return;
                 let target = b[ny][nx];
                 // Movers only move if the destination is empty
-                if (!target.piece && target.type !== "neutral") {
+                if (
+                  !target.piece &&
+                  ["dup", "rot_cw", "rot_ccw"].includes(target.type) === false
+                ) {
                   moverQueue.push({
                     from: { x, y },
                     to: { x: nx, y: ny },
@@ -1263,54 +1270,43 @@ export default function App() {
           b[m.to.y][m.to.x].rotation = targetRot;
         });
 
-        let reactionQueue = uniqueMoves.map((m) => ({
-          x: m.to.x,
-          y: m.to.y,
-          piece: m.piece,
-          rotation: b[m.to.y][m.to.x].rotation,
-        }));
-        processReactions(reactionQueue);
+        // Trigger reactions (including potential Duplicators) for moved pieces
+        processReactions(
+          uniqueMoves.map((m) => ({
+            x: m.to.x,
+            y: m.to.y,
+            piece: m.piece,
+            rotation: b[m.to.y][m.to.x].rotation,
+            overwrite: false,
+          })),
+        );
       });
 
-      // Handle Duplicators separately at the end of the turn to allow "eating"
+      // Handle Duplicators: Check for "Input" pieces behind the Duplicator
       b.forEach((row, y) => {
         row.forEach((cell, x) => {
-          if (cell.type === "dup" && cell.piece && !cell.dead) {
-            const neighbors = [
-              [0, -1],
-              [1, 0],
-              [0, 1],
-              [-1, 0],
-            ];
-            neighbors.forEach(([dx, dy]) => {
-              let nx = x + dx,
-                ny = y + dy;
-              if (
-                nx >= 0 &&
-                nx < cols &&
-                ny >= 0 &&
-                ny < rows &&
-                b[ny][nx].type !== "void"
-              ) {
-                let target = b[ny][nx];
-                if (
-                  !target.type.startsWith("locked") &&
-                  target.type !== "neutral"
-                ) {
-                  // Duplicator overwrites existing pieces
-                  target.piece = cell.piece;
-                  target.rotation = cell.rotation || 0;
-                  processReactions([
-                    {
-                      x: nx,
-                      y: ny,
-                      piece: target.piece,
-                      rotation: target.rotation,
-                    },
-                  ]);
-                }
-              }
-            });
+          if (cell.type === "dup" && !cell.dead) {
+            const dirMap = {
+              r: [-1, 0, 1, 0],
+              l: [1, 0, -1, 0],
+              d: [0, -1, 0, 1],
+              u: [0, 1, 0, -1],
+            };
+            const [inX, inY, outX, outY] = dirMap[cell.dir] || [0, 0, 0, 0];
+
+            let inputCell = b[y + inY]?.[x + inX];
+            if (inputCell && inputCell.piece && !inputCell.dead) {
+              // We found a piece behind the dup! Fire a reaction to the output side
+              processReactions([
+                {
+                  x: x + outX,
+                  y: y + outY,
+                  piece: inputCell.piece,
+                  rotation: inputCell.rotation || 0,
+                  overwrite: true,
+                },
+              ]);
+            }
           }
         });
       });
