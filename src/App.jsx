@@ -590,7 +590,7 @@ export default function App() {
     model.add(tf.layers.dense({ units: cols * rows, activation: "linear" }));
 
     model.compile({
-      optimizer: tf.train.adam(0.001),
+      optimizer: tf.train.adam(0.001, 0.9, 0.999, 1e-7),
       loss: "meanSquaredError",
     });
     modelRef.current = model;
@@ -2768,7 +2768,7 @@ export default function App() {
 
       // We MUST compile it again if we want to continue training it in the pit
       loadedModel.compile({
-        optimizer: tf.train.adam(0.001),
+        optimizer: tf.train.adam(0.001, 0.9, 0.999, 1e-7),
         loss: "meanSquaredError",
       });
 
@@ -3020,7 +3020,7 @@ export default function App() {
           game.memory.push({
             state: flatStateBefore,
             actionIndex: move.y * cols + move.x,
-            reward: reward,
+            reward: Math.max(-5, Math.min(5, reward)),
             nextState: flatStateAfter,
             done: game.status !== "active",
           });
