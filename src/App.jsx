@@ -2758,6 +2758,7 @@ export default function App() {
         "color: #ffffff;",
       );
       memory.riskiness = Math.max(0.0, memory.riskiness - 0.08 * adaptRate);
+      memory.vendettas[opponents[0]] += 1;
       memory.aggressiveness = Math.max(
         0.0,
         memory.aggressiveness - 0.04 * adaptRate,
