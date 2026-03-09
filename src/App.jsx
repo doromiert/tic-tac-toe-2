@@ -646,11 +646,39 @@ export default function App() {
     const targets = [];
 
     tf.tidy(() => {
-      // ... (your existing logic to prepare tensors) ...
-    });
+      const boardSize = cols * rows;
 
-    const xs = tf.tensor2d(states);
-    const ys = tf.tensor2d(targets);
+      for (let i = 0; i < memoryBatch.length; i++) {
+        const { state, actionIndex, reward, nextState, done } = memoryBatch[i];
+
+        // 1. Get current predictions for the 'now' state
+        const stateTensor = tf.tensor2d(state, [1, boardSize]);
+        const currentQ = modelRef.current.predict(stateTensor).dataSync();
+
+        // 2. Predict the 'future' value of the next state
+        const nextStateTensor = tf.tensor2d(nextState, [1, boardSize]);
+        const nextQ = modelRef.current.predict(nextStateTensor).dataSync();
+
+        // 3. Bellman Equation: update the specific action taken
+        // New Q = reward + (discount * max future Q)
+        const maxNextQ = Math.max(...nextQ);
+        const discountFactor = 0.95;
+
+        // If the game ended, there is no future value
+        const targetQ = done ? reward : reward + discountFactor * maxNextQ;
+
+        // Create a copy of current Q values and update the one action we took
+        const updatedQ = new Float32Array(currentQ);
+        updatedQ[actionIndex] = targetQ;
+
+        states.push(state);
+        targets.push(updatedQ);
+      }
+    });
+    const shape = [states.length, cols * rows];
+
+    const xs = tf.tensor2d(states, shape);
+    const ys = tf.tensor2d(targets, shape);
 
     // 2. Use 'yieldEvery: "auto"' or "batch" to tell TF.js
     // to release the GPU periodically so the UI doesn't freeze
