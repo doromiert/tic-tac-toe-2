@@ -3148,19 +3148,41 @@ export default function App() {
 
               {/* STATUS OVERLAY */}
               <div
-                className={`text-[10px] mt-2 font-black uppercase tracking-widest z-10
-                ${
-                  game.status === "won"
-                    ? "text-emerald-400"
-                    : game.status === "lost"
-                      ? "text-rose-400"
-                      : game.status === "draw"
-                        ? "text-amber-400"
-                        : "text-slate-500"
-                }
-              `}
+                className={`text-[10px] mt-2 font-black uppercase tracking-widest z-10 
+  flex flex-col items-center text-center w-full
+  ${
+    game.status === "won"
+      ? "text-emerald-400"
+      : game.status === "lost"
+        ? "text-rose-400"
+        : game.status === "draw"
+          ? "text-amber-400"
+          : "text-slate-500"
+  }`}
               >
-                {game.status}
+                {/* Status Text (ACTIVE, WON, LOST, etc.) */}
+                <span>{game.status}</span>
+
+                {/* Dynamic Scores Row */}
+                {game.scores && (
+                  <div className="text-[8px] font-mono text-slate-400 mt-1 flex gap-1 items-center">
+                    {trainingPlayers.map((player, pIdx) => (
+                      <React.Fragment key={player}>
+                        <span
+                          className={
+                            player === "X" ? "text-fuchsia-400 font-bold" : ""
+                          }
+                        >
+                          {player}: {game.scores[player] || 0}
+                        </span>
+                        {/* Only add a separator if it's not the last player in the list */}
+                        {pIdx < trainingPlayers.length - 1 && (
+                          <span className="opacity-30">|</span>
+                        )}
+                      </React.Fragment>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           ))}
