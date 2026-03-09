@@ -1,5 +1,5 @@
 import "./index.css";
-
+import * as tf from "@tensorflow/tfjs";
 import React, { useState, useEffect, useRef } from "react";
 import { initializeApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
@@ -357,6 +357,133 @@ export default function App() {
   const pulseInterval = 3000; // 3 seconds per turn in Blitz, pulse_blitz, cascade, mirror_protocol
   const [isPlaytesting, setIsPlaytesting] = useState(false);
   const [backupState, setBackupState] = useState(null);
+
+  // --- NEURAL TRAINING STATES ---
+  const [parallelCount, setParallelCount] = useState(4); // Default 4 games
+  const [trainingBoards, setTrainingBoards] = useState([]);
+  const [trainingEpoch, setTrainingEpoch] = useState(0);
+  const [neuralModel, setNeuralModel] = useState(null); // Will hold your TF.js model or custom weights
+
+  // --- TF.JS & RL STATE ---
+  const modelRef = useRef(null);
+  const gamesRef = useRef([]); // Holds the fast-updating parallel board states
+  const replayMemory = useRef([]); // Stores [state, action, reward, nextState, done]
+  const isTraining = useRef(false);
+  const trainingLoopId = useRef(null);
+  const uiSyncIntervalId = useRef(null);
+
+  // RL Hyperparameters
+  const epsilonRef = useRef(1.0); // Exploration rate (starts at 100% random)
+  const EPSILON_DECAY = 0.995;
+  const MIN_EPSILON = 0.05;
+  const GAMMA = 0.9; // Discount factor for future rewards
+
+  // Initialize or Reset the Neural Network
+  const initializeModel = () => {
+    const model = tf.sequential();
+    // Input: Flat array of the board (cols * rows)
+    model.add(
+      tf.layers.dense({
+        units: 128,
+        inputShape: [cols * rows],
+        activation: "relu",
+      }),
+    );
+    model.add(tf.layers.dense({ units: 128, activation: "relu" }));
+    model.add(tf.layers.dense({ units: 64, activation: "relu" }));
+    // Output: Q-Value for every possible tile on the board
+    model.add(tf.layers.dense({ units: cols * rows, activation: "linear" }));
+
+    model.compile({
+      optimizer: tf.train.adam(0.001),
+      loss: "meanSquaredError",
+    });
+    modelRef.current = model;
+    console.log("Neural Net Initialized.");
+  };
+
+  // Converts 2D board array to flat 1D tensor representation
+  // 1 = Neural Bot (X), -1 = Enemies (O, T, S), 0 = Empty/Void
+  const getBoardTensor = (boardState, myPiece = "X") => {
+    const flatBoard = [];
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const cell = boardState[y][x];
+        if (!cell.piece || cell.type === "void" || cell.dead) flatBoard.push(0);
+        else if (cell.piece === myPiece) flatBoard.push(1);
+        else flatBoard.push(-1);
+      }
+    }
+    return tf.tensor2d([flatBoard]); // Shape [1, cols*rows]
+  };
+
+  // The Neural Action Chooser (Epsilon-Greedy)
+  const getNeuralMove = (boardState, validMoves) => {
+    // 1. Explore: Random move
+    if (Math.random() < epsilonRef.current) {
+      return validMoves[Math.floor(Math.random() * validMoves.length)];
+    }
+
+    // 2. Exploit: Ask the Neural Net
+    return tf.tidy(() => {
+      const stateTensor = getBoardTensor(boardState, "X");
+      const qValues = modelRef.current.predict(stateTensor).dataSync(); // Array of size cols*rows
+
+      let bestMove = null;
+      let highestQ = -Infinity;
+
+      // Mask invalid moves: Only look at the Q-values of valid x,y coordinates
+      validMoves.forEach((move) => {
+        const flatIndex = move.y * cols + move.x;
+        if (qValues[flatIndex] > highestQ) {
+          highestQ = qValues[flatIndex];
+          bestMove = move;
+        }
+      });
+      return bestMove;
+    });
+  };
+
+  // Train the model on a batch of memories when a game ends
+  const trainOnMemoryBatch = async (memoryBatch) => {
+    if (memoryBatch.length === 0) return;
+
+    // A simplified Q-learning update
+    const states = [];
+    const targets = [];
+
+    // Process memory batch
+    tf.tidy(() => {
+      memoryBatch.forEach(({ state, actionIndex, reward, nextState, done }) => {
+        const currentQ = modelRef.current
+          .predict(tf.tensor2d([state]))
+          .dataSync();
+        let targetQ = reward;
+
+        if (!done) {
+          const nextQ = modelRef.current
+            .predict(tf.tensor2d([nextState]))
+            .max()
+            .dataSync()[0];
+          targetQ = reward + GAMMA * nextQ;
+        }
+
+        currentQ[actionIndex] = targetQ; // Update only the action we took
+
+        states.push(state);
+        targets.push(currentQ);
+      });
+    });
+
+    const xs = tf.tensor2d(states);
+    const ys = tf.tensor2d(targets);
+
+    // Fit the model in the background
+    await modelRef.current.fit(xs, ys, { epochs: 1, verbose: 0 });
+
+    xs.dispose();
+    ys.dispose();
+  };
 
   const isBuildMode = appMode === "editor" && !isPlaytesting;
 
@@ -1923,8 +2050,6 @@ export default function App() {
   };
 
   const handleCellInteract = (x, y, e) => {
-    // Add this inside your cell hover/prediction function
-
     if (e.type === "pointerdown") {
       setGhostBoard(null);
       setGhostTrails([]);
@@ -2139,11 +2264,171 @@ export default function App() {
     e.target.value = null;
   };
 
+  useEffect(() => {
+    if (appMode !== "neural_training") {
+      isTraining.current = false;
+      cancelAnimationFrame(trainingLoopId.current);
+      clearInterval(uiSyncIntervalId.current);
+      return;
+    }
+
+    if (!modelRef.current) initializeModel();
+    isTraining.current = true;
+
+    // Populate initial gamesRef
+    gamesRef.current = Array.from({ length: parallelCount }, () => ({
+      board: createEmptyBoard(cols, rows),
+      turn: "X",
+      status: "active",
+      moves: 0,
+      memory: [], // Local memory for this specific game
+    }));
+
+    // --- FAST MATH LOOP ---
+    const runSimulationStep = async () => {
+      if (!isTraining.current) return;
+
+      for (let i = 0; i < parallelCount; i++) {
+        let game = gamesRef.current[i];
+        if (game.status !== "active") {
+          // Game over: Train the model, decay epsilon, and restart board
+          await trainOnMemoryBatch(game.memory);
+          epsilonRef.current = Math.max(
+            MIN_EPSILON,
+            epsilonRef.current * EPSILON_DECAY,
+          );
+
+          setTrainingEpoch((e) => e + 1); // Bump epoch counter for UI
+
+          gamesRef.current[i] = {
+            board: createEmptyBoard(cols, rows),
+            turn: "X",
+            status: "active",
+            moves: 0,
+            memory: [],
+          };
+          continue;
+        }
+
+        // Get valid moves for this board
+        let validMoves = [];
+        for (let y = 0; y < rows; y++) {
+          for (let x = 0; x < cols; x++) {
+            if (
+              !game.board[y][x].piece &&
+              !game.board[y][x].dead &&
+              game.board[y][x].type !== "void"
+            ) {
+              validMoves.push({ x, y });
+            }
+          }
+        }
+
+        // Check Draw condition
+        if (validMoves.length === 0) {
+          game.status = "draw";
+          continue;
+        }
+
+        let move;
+        if (game.turn === "X") {
+          // NEURAL BOT TURN
+          const flatStateBefore = getBoardTensor(game.board, "X").dataSync();
+          move = getNeuralMove(game.board, validMoves);
+
+          // Apply move using your existing logic (mocked here)
+          const simResult = simulateTurn(
+            move.x,
+            move.y,
+            "X",
+            game.board,
+            activePlayers,
+            cols,
+            rows,
+            gameMode,
+          );
+          game.board = simResult.board;
+
+          // Reward Calculation
+          let reward = 0.1; // Baseline reward for surviving a turn
+          if (simResult.linesFormed > 0) reward += 5; // Reward combos
+          // Evaluate if bot won or lost here based on your score/dead piece logic
+          // if (won) reward += 20, game.status = 'won'
+
+          const flatStateAfter = getBoardTensor(game.board, "X").dataSync();
+
+          // Save to this game's local memory
+          game.memory.push({
+            state: Array.from(flatStateBefore),
+            actionIndex: move.y * cols + move.x,
+            reward: reward,
+            nextState: Array.from(flatStateAfter),
+            done: game.status !== "active",
+          });
+
+          game.turn = "O"; // Pass turn to procedural bot
+          game.moves++;
+        } else {
+          // PROCEDURAL BOT TURN (O, T, or S)
+          move = getProceduralMove(
+            game.board,
+            game.turn,
+            rows,
+            cols,
+            aiDiff,
+            aiBehavior,
+            gameMode,
+            activePlayers,
+          );
+          if (move) {
+            const simResult = simulateTurn(
+              move.x,
+              move.y,
+              game.turn,
+              game.board,
+              activePlayers,
+              cols,
+              rows,
+              gameMode,
+            );
+            game.board = simResult.board;
+          }
+
+          // Determine next turn (X -> O -> T -> S -> X)
+          const currIdx = activePlayers.indexOf(game.turn);
+          const nextTurn = activePlayers[(currIdx + 1) % activePlayers.length];
+          game.turn = nextTurn;
+        }
+      }
+
+      // Schedule next fast loop iteration immediately
+      trainingLoopId.current = requestAnimationFrame(runSimulationStep);
+    };
+
+    // --- SLOW UI SYNC LOOP ---
+    // Update the React state at ~15 FPS to prevent UI locking
+    uiSyncIntervalId.current = setInterval(() => {
+      if (isTraining.current) {
+        setTrainingBoards([...gamesRef.current]);
+      }
+    }, 1000 / 15);
+
+    // Start engine
+    runSimulationStep();
+
+    // Cleanup
+    return () => {
+      isTraining.current = false;
+      cancelAnimationFrame(trainingLoopId.current);
+      clearInterval(uiSyncIntervalId.current);
+    };
+  }, [appMode, parallelCount, cols, rows]);
+
   // --- RENDERERS ---
   if (appMode === "title") {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 selection:bg-cyan-500/30">
-        <h1 className="text-5xl md:text-7xl font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-indigo-400 to-rose-400 mb-2 drop-shadow-[0_0_15px_rgba(56,189,248,0.4)]">
+        <h1 className="text-5xl md:text-7xl font-black tracking-tighter text-transparent bg-clip-text bg-linear-to-r from-cyan-400 via-indigo-400 to-rose-400 mb-2 drop-shadow-[0_0_15px_rgba(56,189,248,0.4)]">
           TIC-TAC-TOE: EVOLVED
         </h1>
         <p className="text-slate-400 font-mono mb-12">
@@ -2184,11 +2469,172 @@ export default function App() {
           >
             LEVEL / CAMPAIGN EDITOR
           </button>
+          <button
+            onClick={() => setAppMode("neural_setup")}
+            className="p-4 bg-fuchsia-600/20 hover:bg-fuchsia-600/40 text-fuchsia-300 font-bold rounded-xl border border-fuchsia-500/50 transition-all hover:scale-105"
+          >
+            TRAIN NEURO-BOT
+          </button>
         </div>
       </div>
     );
   }
 
+  if (appMode === "neural_setup") {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4">
+        <div className="bg-slate-900 border border-fuchsia-500/50 p-8 rounded-2xl max-w-md w-full shadow-[0_0_30px_rgba(217,70,239,0.15)] flex flex-col gap-6">
+          <h2 className="text-2xl font-black text-fuchsia-400 tracking-widest text-center">
+            NEURAL FACTORY
+          </h2>
+
+          <div>
+            <label className="text-xs text-slate-400 font-bold block mb-1">
+              PARALLEL SIMULATIONS
+            </label>
+            <input
+              type="number"
+              min="1"
+              max="100"
+              value={parallelCount}
+              onChange={(e) =>
+                setParallelCount(Math.max(1, parseInt(e.target.value) || 1))
+              }
+              className="w-full bg-slate-800 text-white p-2 rounded outline-none border border-slate-700 font-mono text-center text-xl"
+            />
+            <p className="text-[10px] text-slate-500 mt-1 text-center">
+              Warning: High numbers may cause browser lag during rendering.
+            </p>
+          </div>
+
+          <div className="flex gap-4">
+            <button
+              onClick={() => {
+                /* Implement export logic here */
+              }}
+              className="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded border border-slate-700 text-xs"
+            >
+              EXPORT MODEL
+            </button>
+            <label className="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded border border-slate-700 text-xs text-center cursor-pointer">
+              IMPORT MODEL
+              <input
+                type="file"
+                accept=".json"
+                className="hidden"
+                onChange={(e) => {
+                  /* Implement import logic */
+                }}
+              />
+            </label>
+          </div>
+
+          <div className="flex gap-2 mt-4">
+            <button
+              onClick={() => setAppMode("title")}
+              className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded"
+            >
+              CANCEL
+            </button>
+            <button
+              onClick={() => {
+                // Initialize N empty boards
+                const newBoards = Array.from({ length: parallelCount }, () => ({
+                  board: createEmptyBoard(cols, rows),
+                  status: "active", // active, won, lost, draw
+                  moves: 0,
+                }));
+                setTrainingBoards(newBoards);
+                setAppMode("neural_training");
+              }}
+              className="flex-1 py-3 bg-fuchsia-600 hover:bg-fuchsia-500 text-white font-black rounded tracking-widest"
+            >
+              INITIATE TRAINING
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (appMode === "neural_training") {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-200 flex flex-col p-4">
+        {/* HEADER */}
+        <div className="flex justify-between items-center border-b border-slate-800 pb-4 mb-4">
+          <div>
+            <h1 className="text-2xl font-black text-fuchsia-400">
+              NEURAL TRAINING ACTIVE
+            </h1>
+            <p className="font-mono text-xs text-slate-400">
+              EPOCH: {trainingEpoch} | PARALLEL INSTANCES: {parallelCount}
+            </p>
+          </div>
+          <div className="flex gap-4">
+            <button
+              className="px-4 py-2 bg-rose-600/20 text-rose-400 border border-rose-500/50 hover:bg-rose-600/40 rounded font-bold text-xs"
+              onClick={() => setAppMode("neural_setup")}
+            >
+              STOP TRAINING
+            </button>
+          </div>
+        </div>
+
+        {/* MATRIX GRID */}
+        <div className="flex-1 overflow-y-auto custom-scrollbar">
+          <div className="grid grid-cols-5 sm:grid-cols-5 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-4">
+            {trainingBoards.map((game, index) => (
+              <div
+                key={index}
+                className="bg-slate-900 border border-slate-800 rounded p-2 flex flex-col items-center"
+              >
+                <span className="text-[10px] text-slate-500 font-mono mb-1 w-full flex justify-between">
+                  <span>GEN-{trainingEpoch}</span>
+                  <span>#{index + 1}</span>
+                </span>
+
+                {/* MINI BOARD RENDERER */}
+                <div
+                  className="grid gap-[1px] bg-slate-800 border border-slate-700 w-full aspect-square"
+                  style={{
+                    gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+                    gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
+                  }}
+                >
+                  {game.board.map((row, y) =>
+                    row.map((cell, x) => (
+                      <div
+                        key={`${x}-${y}`}
+                        className="bg-slate-900 flex items-center justify-center text-[8px] font-black"
+                      >
+                        {/* Simplified piece rendering to save DOM performance */}
+                        {cell.piece === "X" && (
+                          <span className="text-cyan-400">X</span>
+                        )}
+                        {cell.piece === "O" && (
+                          <span className="text-rose-400">O</span>
+                        )}
+                        {cell.piece === "T" && (
+                          <span className="text-emerald-400">T</span>
+                        )}
+                        {cell.piece === "S" && (
+                          <span className="text-amber-400">S</span>
+                        )}
+                      </div>
+                    )),
+                  )}
+                </div>
+
+                <div className="text-[10px] mt-1 font-bold text-slate-400 uppercase">
+                  {game.status}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
   // --- SETUP MENUS ---
   if (appMode === "local_setup" || appMode === "solo_setup") {
     return (
@@ -2344,7 +2790,7 @@ export default function App() {
     );
   }
 
-  const getProceduralMove = (
+  function getProceduralMove(
     board,
     aiPiece,
     rows,
@@ -2353,7 +2799,7 @@ export default function App() {
     aiBehavior,
     gameMode,
     activePlayers = ["X", "O", "T", "S"],
-  ) => {
+  ) {
     // --- 1. MEMORY & PERSONALITY INITIALIZATION ---
     globalThis.aiMemories = globalThis.aiMemories || {};
     if (!globalThis.aiMemories[aiPiece]) {
@@ -3113,7 +3559,7 @@ export default function App() {
     }
 
     return selectedMove;
-  };
+  }
 
   // --- MAIN GAME UI ---
   return (
