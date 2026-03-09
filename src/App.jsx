@@ -90,6 +90,8 @@ export default function App() {
   const [lobbyCode, setLobbyCode] = useState("");
   const [joinCodeInput, setJoinCodeInput] = useState("");
   const [connectionStatus, setConnectionStatus] = useState("disconnected"); // 'disconnected', 'connecting', 'connected'
+  const [maxMemoryEntries, setMaxMemoryEntries] = useState(10000); // Default: 10k moves
+  const [vramUsage, setVramUsage] = useState({ bytes: 0, tensors: 0 });
 
   const tips = [
     "The neural bot learns by playing procedural bots, refining its strategy.",
@@ -2676,6 +2678,12 @@ export default function App() {
           if (game.status !== "active") {
             // Add to buffer
             globalReplayBuffer.current.push(...game.memory);
+            if (globalReplayBuffer.current.length > maxMemoryEntries) {
+              // Remove the oldest memories to stay under the user's RAM cap
+              const overflow =
+                globalReplayBuffer.current.length - maxMemoryEntries;
+              globalReplayBuffer.current.splice(0, overflow);
+            }
 
             // Reset game state immediately
             gamesRef.current[i] = JSON.parse(JSON.stringify(resetState));
@@ -2876,6 +2884,12 @@ export default function App() {
 
     uiSyncIntervalId.current = setInterval(() => {
       if (isTraining.current) {
+        const mem = tf.memory();
+        setVramUsage({
+          bytes: mem.numBytes,
+          tensors: mem.numTensors,
+        });
+
         if (minimapToggle) {
           // FULL RENDER MODE: Calculate heatmaps and sync all boards
           const updatedBoards = gamesRef.current.map((g, idx) => {
@@ -3115,6 +3129,43 @@ export default function App() {
             )}
           </div>
           <div className="flex gap-4">
+            {/* VRAM USAGE */}
+            <div className="flex flex-col gap-1 w-32">
+              <div className="flex justify-between text-[8px] font-bold text-slate-500 uppercase">
+                <span>VRAM</span>
+                <span className="text-cyan-400">
+                  {(vramUsage.bytes / 1024 / 1024).toFixed(1)}MB
+                </span>
+              </div>
+              <div className="h-1 w-full bg-white/5 rounded-full overflow-hidden">
+                <motion.div
+                  className="h-full bg-cyan-500 shadow-[0_0_8px_rgba(6,182,212,0.5)]"
+                  animate={{
+                    width: `${Math.min((vramUsage.bytes / 100000000) * 100, 100)}%`,
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* BUFFER CAPACITY SLIDER */}
+            <div className="flex flex-col gap-1 w-48">
+              <div className="flex justify-between text-[8px] font-bold text-slate-500 uppercase">
+                <span>Mem Cap</span>
+                <span className="text-fuchsia-400">
+                  {(maxMemoryEntries / 1000).toFixed(0)}K Units
+                </span>
+              </div>
+              <input
+                type="range"
+                min="1000"
+                max="50000"
+                step="1000"
+                value={maxMemoryEntries}
+                onChange={(e) => setMaxMemoryEntries(parseInt(e.target.value))}
+                className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-fuchsia-500 hover:accent-fuchsia-400 transition-all"
+              />
+            </div>
+
             <button
               onClick={() => setMinimapToggle(!minimapToggle)}
               className="flex items-center justify-center px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-400 text-[10px] font-black uppercase tracking-widest rounded border border-slate-700 transition-all active:scale-95"
@@ -3318,11 +3369,11 @@ export default function App() {
               className="z-10 flex flex-col items-center text-center"
               style={{ width: "90vw" }}
             >
-              <div className="mb-4 space-y-2">
+              <div className="mb-4 space-y-2" style={{ width: "90vw" }}>
                 <h3 className="text-white/40  text-2xl tracking-[2px] uppercase">
                   Learning...
                 </h3>
-                <div className="h-[1px] w-12 bg-gradient-to-r from-transparent via-white/20 to-transparent mx-auto" />
+                <div className="h-[1px] w-24 bg-gradient-to-r  from-transparent via-white/20 to-transparent mx-auto" />
               </div>
 
               <div className="flex flex-col gap-1">
