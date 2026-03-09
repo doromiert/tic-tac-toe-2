@@ -68,6 +68,12 @@ const createEmptyBoard = (c, r) =>
     );
 
 export default function App() {
+  const statsRef = useRef({ wins: 0, losses: 0, draws: 0 });
+  const [trainingStats, setTrainingStats] = useState({
+    wins: 0,
+    losses: 0,
+    draws: 0,
+  });
   const [savedCampaigns, setSavedCampaigns] = useState([]);
   const [rotConfig, setRotConfig] = useState({ x: 50, y: 50, mult: 100 });
   const rtcRef = useRef(null);
@@ -730,6 +736,21 @@ export default function App() {
   const [renamingIndex, setRenamingIndex] = useState(-1);
   const [aiDiff, setAiDiff] = useState("hard");
   const [playtestMode, setPlaytestMode] = useState("standard");
+  // Add this state to track how many bots are in the pit
+  const [trainingPlayers, setTrainingPlayers] = useState(["X", "O"]);
+
+  // TF.js built-in download trigger
+  const exportNeuralModel = async () => {
+    if (modelRef.current) {
+      try {
+        // This magically triggers a file download in the browser!
+        await modelRef.current.save("downloads://ttt-evolved-neural-bot");
+        console.log("Neural brain exported successfully.");
+      } catch (error) {
+        console.error("Failed to export model:", error);
+      }
+    }
+  };
 
   const handleDragStart = (e, index) => {
     setDraggedIndex(index);
@@ -2165,6 +2186,234 @@ export default function App() {
     resolveTurn(x, y);
   };
 
+  // --- PURE ENGINE FOR FAST SIMULATIONS ---
+  const executePureTurn = (
+    startX,
+    startY,
+    currentPiece,
+    currentBoard,
+    activePlayersArray,
+    currentScores,
+  ) => {
+    // Deep clone the board so we don't accidentally mutate the previous frame
+    let b = JSON.parse(JSON.stringify(currentBoard));
+
+    // Ensure scores are perfectly initialized to prevent NaN errors
+    let tempScores = { X: 0, O: 0, T: 0, S: 0, ...currentScores };
+    let totalLinesToErase = new Set();
+    let matchOver = false;
+
+    let q = [{ x: startX, y: startY, piece: currentPiece, overwrite: false }];
+
+    // Mirror Protocol Mode
+    if (gameMode === "mirror_protocol") {
+      let mx = cols - 1 - startX;
+      if (mx >= 0 && mx < cols) {
+        let mCell = b[startY][mx];
+        if (
+          !mCell.piece &&
+          !mCell.mechanicalLock &&
+          !["void", "locked_mech", "locked_letter"].includes(mCell.type)
+        ) {
+          q.push({ x: mx, y: startY, piece: currentPiece, overwrite: false });
+        }
+      }
+    }
+
+    // Phase 1: Placements
+    let { linesToErase: initLines } = resolvePlacements(
+      q,
+      b,
+      cols,
+      rows,
+      activePlayersArray,
+      false,
+    );
+    initLines.forEach((l) => totalLinesToErase.add(l));
+    updateSwitches(b);
+
+    // Phase 2: First Gravity
+    if (gameMode === "cascade") runGravity(b, null, false, cols, rows);
+
+    // Phase 3: Single Machine Tick
+    tickMachines(
+      b,
+      null,
+      false,
+      cols,
+      rows,
+      activePlayersArray,
+      totalLinesToErase,
+    );
+    updateSwitches(b);
+
+    // Phase 4: Final Gravity
+    if (gameMode === "cascade") runGravity(b, null, false, cols, rows);
+
+    // Phase 5: Point Deductions for erased lines
+    if (totalLinesToErase.size > 0) {
+      totalLinesToErase.forEach((id) => {
+        let owner = null;
+        b.forEach((row) =>
+          row.forEach((c) => {
+            if (c.lineId === id) {
+              owner = c.piece;
+              c.dead = false;
+              c.lineId = null;
+            }
+          }),
+        );
+        if (owner && tempScores[owner] !== undefined) tempScores[owner]--;
+      });
+    }
+
+    let earnedExtraTurns = 0;
+    let linesFound = [];
+
+    // --- ISOLATED CHECKLINE LOGIC ---
+    const checkLine = (sx, sy, dx, dy) => {
+      let run = [];
+      let cx = sx,
+        cy = sy;
+
+      const scoreRun = () => {
+        // MUST use activePlayersArray here, not global activePlayers
+        activePlayersArray.forEach((player) => {
+          let currentSeq = [];
+          run.forEach((item) => {
+            let p = item.cell.piece;
+            let isDead = item.cell.dead;
+            let isWild = item.cell.type === "neutral";
+            if (!isDead && (p === player || isWild)) {
+              currentSeq.push(item);
+            } else {
+              evalSeq(currentSeq, player);
+              currentSeq = [];
+            }
+          });
+          evalSeq(currentSeq, player);
+        });
+      };
+
+      const evalSeq = (seq, player) => {
+        let firstIdx = seq.findIndex((i) => i.cell.piece === player);
+        let lastIdx = seq.findLastIndex((i) => i.cell.piece === player);
+        if (firstIdx !== -1 && lastIdx !== -1 && lastIdx - firstIdx + 1 >= 3) {
+          linesFound.push({ player, seq: seq.slice(firstIdx, lastIdx + 1) });
+        }
+      };
+
+      while (cx >= 0 && cx < cols && cy >= 0 && cy < rows) {
+        let cell = b[cy][cx];
+        if (cell.type === "void") {
+          scoreRun();
+          run = [];
+          cx += dx;
+          cy += dy;
+          continue;
+        }
+
+        let nextX = cx + dx,
+          nextY = cy + dy;
+        let blocked = false;
+
+        if (nextX >= 0 && nextX < cols && nextY >= 0 && nextY < rows) {
+          if (dx === 1 && dy === 0 && cell.walls.r) blocked = true;
+          if (dx === 0 && dy === 1 && cell.walls.b) blocked = true;
+          if (dx === 1 && dy === 1 && b[cy]?.[nextX]?.walls?.bl) blocked = true;
+          if (dx === -1 && dy === 1 && b[cy]?.[nextX]?.walls?.br)
+            blocked = true;
+        } else {
+          blocked = true;
+        }
+
+        run.push({ x: cx, y: cy, cell });
+        if (blocked) {
+          scoreRun();
+          run = [];
+        }
+        cx = nextX;
+        cy = nextY;
+      }
+      if (run.length > 0) scoreRun();
+    };
+
+    // Run scans
+    for (let y = 0; y < rows; y++) checkLine(0, y, 1, 0);
+    for (let x = 0; x < cols; x++) checkLine(x, 0, 0, 1);
+    for (let y = 0; y < rows; y++) checkLine(0, y, 1, 1);
+    for (let x = 1; x < cols; x++) checkLine(x, 0, 1, 1);
+    for (let y = 0; y < rows; y++) checkLine(cols - 1, y, -1, 1);
+    for (let x = 0; x < cols - 1; x++) checkLine(x, 0, -1, 1);
+
+    let pointsScoredThisTurn = 0;
+
+    // --- ISOLATED SCORING ---
+    linesFound.forEach((line) => {
+      const lId = Math.random().toString(36).substr(2, 9); // Quick isolated ID
+      let lineScore = 1;
+
+      if (gameMode === "zone_control") {
+        lineScore = 0;
+        line.seq.forEach((item) => {
+          if (b[item.y][item.x].isTarget) lineScore++;
+        });
+      }
+
+      // Update local score tracker
+      if (tempScores[line.player] !== undefined) {
+        tempScores[line.player] += lineScore;
+      }
+
+      if (line.player === currentPiece) {
+        pointsScoredThisTurn++;
+        let longLineBonus = Math.max(0, line.seq.length - 3);
+        earnedExtraTurns += longLineBonus;
+      }
+
+      line.seq.forEach((item) => {
+        if (b[item.y][item.x].type !== "neutral") b[item.y][item.x].dead = true;
+        b[item.y][item.x].lineId = lId;
+      });
+    });
+
+    if (pointsScoredThisTurn > 1) earnedExtraTurns += pointsScoredThisTurn - 1;
+
+    // --- CHECK FULL BOARD (DRAW/END CONDITION) ---
+    let isFull = true;
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const c = b[y][x];
+        if (c.type === "void") continue;
+        if (!c.piece) {
+          if (
+            [
+              "empty",
+              "zap",
+              "mov",
+              "rot_cw",
+              "rot_ccw",
+              "flip",
+              "switch",
+            ].includes(c.type)
+          )
+            isFull = false;
+          if (c.type === "locked_letter" && c.unlocked) isFull = false;
+        }
+      }
+    }
+
+    if (isFull) matchOver = true;
+
+    // Return the newly calculated state without ever touching React
+    return {
+      board: b,
+      scores: tempScores,
+      extraTurns: earnedExtraTurns,
+      matchOver: matchOver,
+    };
+  };
+
   const toggleWall = (x, y, edge) => {
     let b = [...board];
     b[y] = [...b[y]];
@@ -2264,6 +2513,48 @@ export default function App() {
     e.target.value = null;
   };
 
+  const handleModelImport = async (e) => {
+    const files = Array.from(e.target.files);
+    if (files.length === 0) return;
+
+    // TF.js requires both the architecture (JSON) and the weights (BIN)
+    const jsonFile = files.find((f) => f.name.endsWith(".json"));
+    const binFile = files.find((f) => f.name.endsWith(".bin"));
+
+    if (!jsonFile || !binFile) {
+      alert(
+        "Please select BOTH the .json file and the .bin file at the same time.",
+      );
+      return;
+    }
+
+    try {
+      // Load the model directly from the browser's file objects
+      const loadedModel = await tf.loadLayersModel(
+        tf.io.browserFiles([jsonFile, binFile]),
+      );
+
+      // We MUST compile it again if we want to continue training it in the pit
+      loadedModel.compile({
+        optimizer: tf.train.adam(0.001),
+        loss: "meanSquaredError",
+      });
+
+      modelRef.current = loadedModel;
+
+      // Drop the exploration rate down so it actually uses its brain instead of moving randomly
+      epsilonRef.current = 0.1;
+
+      console.log("Neural brain transplanted successfully.");
+      alert("Model loaded! The bot is ready to fight.");
+    } catch (error) {
+      console.error("Failed to import model:", error);
+      alert("Error loading model. Check the console for details.");
+    }
+
+    // Reset the input so you can load a different model later if needed
+    e.target.value = null;
+  };
   useEffect(() => {
     if (appMode !== "neural_training") {
       isTraining.current = false;
@@ -2291,7 +2582,10 @@ export default function App() {
       for (let i = 0; i < parallelCount; i++) {
         let game = gamesRef.current[i];
         if (game.status !== "active") {
-          // Game over: Train the model, decay epsilon, and restart board
+          if (game.status === "won") statsRef.current.wins++;
+          else if (game.status === "lost") statsRef.current.losses++;
+          else if (game.status === "draw") statsRef.current.draws++;
+
           await trainOnMemoryBatch(game.memory);
           epsilonRef.current = Math.max(
             MIN_EPSILON,
@@ -2336,28 +2630,61 @@ export default function App() {
           const flatStateBefore = getBoardTensor(game.board, "X").dataSync();
           move = getNeuralMove(game.board, validMoves);
 
-          // Apply move using your existing logic (mocked here)
-          const simResult = simulateTurn(
+          // APPLY PURE TURN
+          const simResult = executePureTurn(
             move.x,
             move.y,
             "X",
             game.board,
-            activePlayers,
-            cols,
-            rows,
-            gameMode,
+            trainingPlayers,
+            game.scores || { X: 0, O: 0, T: 0, S: 0 },
           );
           game.board = simResult.board;
+          game.scores = simResult.scores;
 
-          // Reward Calculation
-          let reward = 0.1; // Baseline reward for surviving a turn
-          if (simResult.linesFormed > 0) reward += 5; // Reward combos
-          // Evaluate if bot won or lost here based on your score/dead piece logic
-          // if (won) reward += 20, game.status = 'won'
+          // Reward Calculation (Now based on actual engine scores)
+          let reward = 0; // Base survival
+
+          // Reward for scoring points
+          if (game.scores.X > (game.lastScore || 0)) {
+            reward += (game.scores.X - (game.lastScore || 0)) * 5;
+          }
+          game.lastScore = game.scores.X;
+
+          if (simResult.matchOver) {
+            let enemyMax = Math.max(
+              game.scores.O || 0,
+              game.scores.T || 0,
+              game.scores.S || 0,
+            );
+            if (game.scores.X > enemyMax) {
+              reward = 1.0; // Pure win
+            } else if (game.scores.X < enemyMax) {
+              reward = -1.0; // Pure loss
+            } else {
+              reward = 0.5; // Draw is better than losing, but not quite winning
+            }
+          } // Check Win/Loss Condition
+          if (simResult.matchOver) {
+            let enemyMax = Math.max(
+              game.scores.O || 0,
+              game.scores.T || 0,
+              game.scores.S || 0,
+            );
+            if (game.scores.X > enemyMax) {
+              game.status = "won";
+              reward += 20; // Massive reward for winning
+            } else if (game.scores.X < enemyMax) {
+              game.status = "lost";
+              reward -= 20; // Massive penalty for losing
+            } else {
+              game.status = "draw";
+            }
+          }
 
           const flatStateAfter = getBoardTensor(game.board, "X").dataSync();
 
-          // Save to this game's local memory
+          // Save Memory
           game.memory.push({
             state: Array.from(flatStateBefore),
             actionIndex: move.y * cols + move.x,
@@ -2366,10 +2693,20 @@ export default function App() {
             done: game.status !== "active",
           });
 
-          game.turn = "O"; // Pass turn to procedural bot
-          game.moves++;
+          // Handle Extra Turns
+          if (simResult.extraTurns > 0) {
+            // Neural bot gets to go again!
+            game.moves++;
+          } else {
+            // Pass turn to next procedural bot
+            const currIdx = trainingPlayers.indexOf(game.turn);
+            const nextTurn =
+              trainingPlayers[(currIdx + 1) % trainingPlayers.length];
+            game.turn = nextTurn;
+            game.moves++;
+          }
         } else {
-          // PROCEDURAL BOT TURN (O, T, or S)
+          // PROCEDURAL BOT TURN
           move = getProceduralMove(
             game.board,
             game.turn,
@@ -2378,26 +2715,45 @@ export default function App() {
             aiDiff,
             aiBehavior,
             gameMode,
-            activePlayers,
+            trainingPlayers,
           );
           if (move) {
-            const simResult = simulateTurn(
+            const simResult = executePureTurn(
               move.x,
               move.y,
               game.turn,
               game.board,
-              activePlayers,
-              cols,
-              rows,
-              gameMode,
+              trainingPlayers,
+              game.scores || { X: 0, O: 0, T: 0, S: 0 },
             );
             game.board = simResult.board;
-          }
+            game.scores = simResult.scores;
 
-          // Determine next turn (X -> O -> T -> S -> X)
-          const currIdx = activePlayers.indexOf(game.turn);
-          const nextTurn = activePlayers[(currIdx + 1) % activePlayers.length];
-          game.turn = nextTurn;
+            if (simResult.matchOver) {
+              // Game ended on Procedural bot's turn
+              let enemyMax = Math.max(
+                game.scores.O || 0,
+                game.scores.T || 0,
+                game.scores.S || 0,
+              );
+              if (game.scores.X > enemyMax) game.status = "won";
+              else if (game.scores.X < enemyMax) game.status = "lost";
+              else game.status = "draw";
+            }
+
+            if (simResult.extraTurns === 0) {
+              const currIdx = trainingPlayers.indexOf(game.turn);
+              const nextTurn =
+                trainingPlayers[(currIdx + 1) % trainingPlayers.length];
+              game.turn = nextTurn;
+            }
+          } else {
+            // If procedural bot returns null (no valid moves or skipped turn), force next turn
+            const currIdx = trainingPlayers.indexOf(game.turn);
+            const nextTurn =
+              trainingPlayers[(currIdx + 1) % trainingPlayers.length];
+            game.turn = nextTurn;
+          }
         }
       }
 
@@ -2410,6 +2766,7 @@ export default function App() {
     uiSyncIntervalId.current = setInterval(() => {
       if (isTraining.current) {
         setTrainingBoards([...gamesRef.current]);
+        setTrainingStats({ ...statsRef.current }); // Sync the scoreboard!
       }
     }, 1000 / 15);
 
@@ -2490,6 +2847,54 @@ export default function App() {
 
           <div>
             <label className="text-xs text-slate-400 font-bold block mb-1">
+              OPPONENTS (AI)
+            </label>
+
+            <select
+              value={trainingPlayers.length}
+              onChange={(e) => {
+                const count = parseInt(e.target.value);
+                setTrainingPlayers(["X", "O", "T", "S"].slice(0, count));
+              }}
+              className="w-full bg-slate-800 text-fuchsia-400 font-bold p-2 rounded outline-none border border-slate-700"
+            >
+              <option value="2">1 Bot (X vs O)</option>
+              <option value="3">2 Bots (X vs O vs T)</option>
+              <option value="4">3 Bots (X vs O vs T vs S)</option>
+            </select>
+          </div>
+          <div className="mt-2">
+            <label className="text-xs text-slate-400 font-bold block mb-1">
+              TRAINING ENVIRONMENT (LEVEL)
+            </label>
+            <label className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded border border-slate-700 text-center cursor-pointer transition-colors block text-xs tracking-widest uppercase">
+              📁 IMPORT LEVEL JSON
+              <input
+                type="file"
+                accept=".json"
+                className="hidden"
+                onChange={(e) =>
+                  handleLevelImport(e, (d) => {
+                    console.log("Loaded training level data:", d);
+                    setGameMode(d.gameMode || "standard");
+                    setCols(d.cols || d.gridSize || 9);
+                    setRows(d.rows || d.gridSize || 9);
+                    setBoard(JSON.parse(JSON.stringify(d.board)));
+                    setCurrentGoals(
+                      d.goals ||
+                        (d.goal ? [d.goal] : [{ type: "standard", target: 0 }]),
+                    );
+                    setAiBehavior(d.aiBehavior || "standard");
+                    alert(
+                      `Environment loaded: ${d.cols || d.gridSize || 9}x${d.rows || d.gridSize || 9} ${d.gameMode || "standard"}`,
+                    );
+                  })
+                }
+              />
+            </label>
+          </div>
+          <div>
+            <label className="text-xs text-slate-400 font-bold block mb-1">
               PARALLEL SIMULATIONS
             </label>
             <input
@@ -2508,23 +2913,14 @@ export default function App() {
           </div>
 
           <div className="flex gap-4">
-            <button
-              onClick={() => {
-                /* Implement export logic here */
-              }}
-              className="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded border border-slate-700 text-xs"
-            >
-              EXPORT MODEL
-            </button>
-            <label className="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded border border-slate-700 text-xs text-center cursor-pointer">
+            <label className="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded border border-slate-700 text-xs text-center cursor-pointer transition-colors">
               IMPORT MODEL
               <input
                 type="file"
-                accept=".json"
+                multiple // CRITICAL: Allows selecting both JSON and BIN files
+                accept=".json,.bin"
                 className="hidden"
-                onChange={(e) => {
-                  /* Implement import logic */
-                }}
+                onChange={handleModelImport}
               />
             </label>
           </div>
@@ -2569,68 +2965,93 @@ export default function App() {
             <p className="font-mono text-xs text-slate-400">
               EPOCH: {trainingEpoch} | PARALLEL INSTANCES: {parallelCount}
             </p>
+            <span className="text-fuchsia-300 font-bold bg-fuchsia-900/30 px-2 py-0.5 rounded border border-fuchsia-800/50">
+              W: {trainingStats.wins} / L: {trainingStats.losses} / D:{" "}
+              {trainingStats.draws}
+            </span>
           </div>
           <div className="flex gap-4">
             <button
-              className="px-4 py-2 bg-rose-600/20 text-rose-400 border border-rose-500/50 hover:bg-rose-600/40 rounded font-bold text-xs"
-              onClick={() => setAppMode("neural_setup")}
+              className="px-4 py-2 bg-rose-600/20 text-rose-400 border border-rose-500/50 hover:bg-rose-600/40 rounded font-bold text-xs transition-colors flex items-center gap-2"
+              onClick={async () => {
+                setAppMode("neural_setup");
+              }}
             >
-              STOP TRAINING
+              STOP WITHOUT SAVING
+            </button>
+            <button
+              className="px-4 py-2 bg-rose-600/20 text-rose-400 border border-rose-500/50 hover:bg-rose-600/40 rounded font-bold text-xs transition-colors flex items-center gap-2"
+              onClick={async () => {
+                // Save the brain before pulling the plug!
+                await exportNeuralModel();
+                setAppMode("neural_setup");
+              }}
+            >
+              💾 SAVE & STOP
             </button>
           </div>
         </div>
 
         {/* MATRIX GRID */}
-        <div className="flex-1 overflow-y-auto custom-scrollbar">
-          <div className="grid grid-cols-5 sm:grid-cols-5 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-4">
-            {trainingBoards.map((game, index) => (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
+          {trainingBoards.map((game, index) => (
+            <div
+              key={index}
+              className="bg-slate-900 border border-slate-800 rounded p-2 flex flex-col items-center shadow-lg relative overflow-hidden"
+            >
+              <span className="text-[10px] text-slate-500 font-mono mb-1 w-full flex justify-between z-10">
+                <span>GEN-{trainingEpoch}</span>
+                <span>#{index + 1}</span>
+              </span>
+
+              {/* MINI BOARD RENDERER */}
               <div
-                key={index}
-                className="bg-slate-900 border border-slate-800 rounded p-2 flex flex-col items-center"
+                className="grid gap-[1px] bg-slate-800 border border-slate-700 w-full aspect-square z-10"
+                style={{
+                  gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+                  gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
+                }}
               >
-                <span className="text-[10px] text-slate-500 font-mono mb-1 w-full flex justify-between">
-                  <span>GEN-{trainingEpoch}</span>
-                  <span>#{index + 1}</span>
-                </span>
-
-                {/* MINI BOARD RENDERER */}
-                <div
-                  className="grid gap-[1px] bg-slate-800 border border-slate-700 w-full aspect-square"
-                  style={{
-                    gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
-                    gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
-                  }}
-                >
-                  {game.board.map((row, y) =>
-                    row.map((cell, x) => (
-                      <div
-                        key={`${x}-${y}`}
-                        className="bg-slate-900 flex items-center justify-center text-[8px] font-black"
-                      >
-                        {/* Simplified piece rendering to save DOM performance */}
-                        {cell.piece === "X" && (
-                          <span className="text-cyan-400">X</span>
-                        )}
-                        {cell.piece === "O" && (
-                          <span className="text-rose-400">O</span>
-                        )}
-                        {cell.piece === "T" && (
-                          <span className="text-emerald-400">T</span>
-                        )}
-                        {cell.piece === "S" && (
-                          <span className="text-amber-400">S</span>
-                        )}
-                      </div>
-                    )),
-                  )}
-                </div>
-
-                <div className="text-[10px] mt-1 font-bold text-slate-400 uppercase">
-                  {game.status}
-                </div>
+                {game.board.map((row, y) =>
+                  row.map((cell, x) => (
+                    <div
+                      key={`${x}-${y}`}
+                      className="bg-slate-950 flex items-center justify-center p-[1px]"
+                    >
+                      {cell.piece && (
+                        <img
+                          src={`/icons/${cell.piece}.svg`}
+                          alt={cell.piece}
+                          className="w-full h-full object-contain opacity-90 drop-shadow-sm"
+                          style={{
+                            maxWidth: "48px",
+                            maxHeight: "48px",
+                          }}
+                        />
+                      )}
+                    </div>
+                  )),
+                )}
               </div>
-            ))}
-          </div>
+
+              {/* STATUS OVERLAY */}
+              <div
+                className={`text-[10px] mt-2 font-black uppercase tracking-widest z-10
+                ${
+                  game.status === "won"
+                    ? "text-emerald-400"
+                    : game.status === "lost"
+                      ? "text-rose-400"
+                      : game.status === "draw"
+                        ? "text-amber-400"
+                        : "text-slate-500"
+                }
+              `}
+              >
+                {game.status}
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     );
