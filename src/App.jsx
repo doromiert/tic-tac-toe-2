@@ -2604,6 +2604,17 @@ export default function App() {
     e.target.value = null;
   };
 
+  // The "Clean Slate" for a new simulation
+  const resetState = {
+    board: createEmptyBoard(cols, rows),
+    turn: "X",
+    status: "active",
+    moves: 0,
+    memory: [],
+    lastScore: 0,
+    scores: { X: 0, O: 0, T: 0, S: 0 },
+  };
+  const isCurrentlyFitting = useRef(false);
   useEffect(() => {
     if (appMode !== "neural_training") {
       isTraining.current = false;
@@ -2667,7 +2678,7 @@ export default function App() {
             globalReplayBuffer.current.push(...game.memory);
 
             // Reset game state immediately
-            gamesRef.current[i] = { ...resetState };
+            gamesRef.current[i] = JSON.parse(JSON.stringify(resetState));
 
             // ONLY train if we aren't already training
             if (!isCurrentlyFitting.current) {
