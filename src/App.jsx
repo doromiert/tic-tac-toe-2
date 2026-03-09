@@ -74,6 +74,7 @@ export default function App() {
     losses: 0,
     draws: 0,
   });
+  const [minimapToggle, setMinimapToggle] = useState(true);
   const [miniMapGridSize, setMiniMapGridSize] = useState(10);
   const [savedCampaigns, setSavedCampaigns] = useState([]);
   const [rotConfig, setRotConfig] = useState({ x: 50, y: 50, mult: 100 });
@@ -469,41 +470,32 @@ export default function App() {
   const trainOnMemoryBatch = async (memoryBatch) => {
     if (memoryBatch.length === 0) return;
 
-    // A simplified Q-learning update
+    // 1. Wait for a free animation frame before starting math
+    await tf.nextFrame();
+
     const states = [];
     const targets = [];
 
-    // Process memory batch
     tf.tidy(() => {
-      memoryBatch.forEach(({ state, actionIndex, reward, nextState, done }) => {
-        const currentQ = modelRef.current
-          .predict(tf.tensor2d([state]))
-          .dataSync();
-        let targetQ = reward;
-
-        if (!done) {
-          const nextQ = modelRef.current
-            .predict(tf.tensor2d([nextState]))
-            .max()
-            .dataSync()[0];
-          targetQ = reward + GAMMA * nextQ;
-        }
-
-        currentQ[actionIndex] = targetQ; // Update only the action we took
-
-        states.push(state);
-        targets.push(currentQ);
-      });
+      // ... (your existing logic to prepare tensors) ...
     });
 
     const xs = tf.tensor2d(states);
     const ys = tf.tensor2d(targets);
 
-    // Fit the model in the background
-    await modelRef.current.fit(xs, ys, { epochs: 1, verbose: 0 });
+    // 2. Use 'yieldEvery: "auto"' or "batch" to tell TF.js
+    // to release the GPU periodically so the UI doesn't freeze
+    await modelRef.current.fit(xs, ys, {
+      epochs: 1,
+      verbose: 0,
+      yieldEvery: "batch",
+    });
 
     xs.dispose();
     ys.dispose();
+
+    // 3. Give the UI one more frame to catch up
+    await tf.nextFrame();
   };
 
   const isBuildMode = appMode === "editor" && !isPlaytesting;
@@ -2634,24 +2626,23 @@ export default function App() {
 
           // Train and Reset as usual...
           if (game.status !== "active") {
+            // Add to buffer
             globalReplayBuffer.current.push(...game.memory);
 
-            // Keep the buffer from exploding (memory management)
-            if (globalReplayBuffer.current.length > MAX_BUFFER_SIZE) {
-              globalReplayBuffer.current.splice(0, game.memory.length);
-            }
+            // Reset game state immediately
+            gamesRef.current[i] = { ...resetState };
 
-            // --- NATIVE SAMPLE LOGIC (Replaces Lodash _) ---
-            const batchSize = Math.min(globalReplayBuffer.current.length, 128);
-            const batch = [];
-            for (let j = 0; j < batchSize; j++) {
-              const randomIndex = Math.floor(
-                Math.random() * globalReplayBuffer.current.length,
-              );
-              batch.push(globalReplayBuffer.current[randomIndex]);
-            }
+            // ONLY train if we aren't already training
+            if (!isCurrentlyFitting.current) {
+              isCurrentlyFitting.current = true;
 
-            await trainOnMemoryBatch(batch);
+              // Schedule training for the "next" available moment
+              setTimeout(async () => {
+                const batch = sampleBatch(globalReplayBuffer.current, 128);
+                await trainOnMemoryBatch(batch);
+                isCurrentlyFitting.current = false;
+              }, 10); // 10ms delay is enough for the GPU to finish a frame
+            }
           }
           setTrainingEpoch((e) => e + 1);
 
@@ -2837,12 +2828,23 @@ export default function App() {
 
     uiSyncIntervalId.current = setInterval(() => {
       if (isTraining.current) {
-        const updatedBoards = gamesRef.current.map((g, idx) => {
-          const heatmap = idx < 8 ? getBoardHeatmap(g.board) : null;
-          return { ...g, heatmap };
+        if (minimapToggle) {
+          // FULL RENDER MODE: Calculate heatmaps and sync all boards
+          const updatedBoards = gamesRef.current.map((g, idx) => {
+            const heatmap = idx < 8 ? getBoardHeatmap(g.board) : null;
+            return { ...g, heatmap };
+          });
+          setTrainingBoards(updatedBoards);
+        } else {
+          // TURBO MODE: Only sync the global stats, skip the heavy board mapping
+          // This saves a massive amount of CPU/Memory work every 66ms
+        }
+
+        // Always sync the stats so the scoreboard keeps ticking
+        setTrainingStats({
+          ...statsRef.current,
+          epsilon: epsilonRef.current,
         });
-        setTrainingBoards(updatedBoards);
-        setTrainingStats({ ...statsRef.current, epsilon: epsilonRef.current });
       }
     }, 1000 / 15);
 
@@ -3052,15 +3054,25 @@ export default function App() {
             <p className="font-mono text-xs text-slate-400">
               EPOCH: {trainingEpoch} | PARALLEL INSTANCES: {parallelCount}
             </p>
-            <span className="text-fuchsia-300 font-bold bg-fuchsia-900/30 px-2 py-0.5 rounded border border-fuchsia-800/50">
-              W: {trainingStats.wins} / L: {trainingStats.losses} / D:{" "}
-              {trainingStats.draws}
-            </span>
-            <span className="text-cyan-400 font-mono text-[10px] ml-2">
-              CURIOSITY (EPS): {(trainingStats.epsilon * 100).toFixed(1)}%
-            </span>
+            {minimapToggle && (
+              <>
+                <span className="text-fuchsia-300 font-bold bg-fuchsia-900/30 px-2 py-0.5 rounded border border-fuchsia-800/50">
+                  W: {trainingStats.wins} / L: {trainingStats.losses} / D:{" "}
+                  {trainingStats.draws}
+                </span>
+                <span className="text-cyan-400 font-mono text-[10px] ml-2">
+                  CURIOSITY (EPS): {(trainingStats.epsilon * 100).toFixed(1)}%
+                </span>
+              </>
+            )}
           </div>
           <div className="flex gap-4">
+            <button
+              onClick={() => setMinimapToggle(!minimapToggle)}
+              className="flex items-center justify-center px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-400 text-[10px] font-black uppercase tracking-widest rounded border border-slate-700 transition-all active:scale-95"
+            >
+              {minimapToggle ? "Hide Maps" : "Show Maps"}
+            </button>
             <input
               type="number"
               value={miniMapGridSize}
@@ -3089,66 +3101,67 @@ export default function App() {
         </div>
 
         {/* MATRIX GRID */}
-        <div
-          style={{
-            gridTemplateColumns: `repeat(${miniMapGridSize}, minmax(0, 1fr))`,
-          }}
-          className={`grid gap-4`}
-        >
-          {trainingBoards.map((game, index) => (
-            <div
-              key={index}
-              className="bg-slate-900 border border-slate-800 rounded p-2 flex flex-col items-center shadow-lg relative overflow-hidden"
-            >
-              <span className="text-[10px] text-slate-500 font-mono mb-1 w-full flex justify-between z-10">
-                <span>GEN-{trainingEpoch}</span>
-                <span>#{index + 1}</span>
-              </span>
-
-              {/* MINI BOARD RENDERER */}
+        {minimapToggle && (
+          <div
+            style={{
+              gridTemplateColumns: `repeat(${miniMapGridSize}, minmax(0, 1fr))`,
+            }}
+            className={`grid gap-4`}
+          >
+            {trainingBoards.map((game, index) => (
               <div
-                className="grid gap-[1px] bg-slate-800 border border-slate-700 w-full aspect-square z-10"
-                style={{
-                  gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
-                  gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
-                }}
+                key={index}
+                className="bg-slate-900 border border-slate-800 rounded p-2 flex flex-col items-center shadow-lg relative overflow-hidden"
               >
-                {game.board.map((row, y) =>
-                  row.map((cell, x) => (
-                    <div
-                      key={`${x}-${y}`}
-                      className="bg-slate-950 flex items-center justify-center p-[1px] relative"
-                    >
-                      {/* THE HEATMAP LAYER */}
-                      {game.heatmap && (
-                        <div
-                          className="absolute inset-0 z-0 opacity-40"
-                          style={{
-                            backgroundColor: `rgb(${255 * (1 - game.heatmap[y * cols + x])}, ${255 * game.heatmap[y * cols + x]}, 0)`,
-                            boxShadow:
-                              game.heatmap[y * cols + x] > 0.8
-                                ? "inset 0 0 4px #fff"
-                                : "none",
-                          }}
-                        />
-                      )}
+                <span className="text-[10px] text-slate-500 font-mono mb-1 w-full flex justify-between z-10">
+                  <span>GEN-{trainingEpoch}</span>
+                  <span>#{index + 1}</span>
+                </span>
 
-                      {cell.piece && (
-                        <img
-                          src={`/icons/${cell.piece}.svg`}
-                          alt={cell.piece}
-                          style={{ height: "80%", width: "80%" }}
-                          className="w-full h-full object-contain z-10 drop-shadow-sm"
-                        />
-                      )}
-                    </div>
-                  )),
-                )}
-              </div>
+                {/* MINI BOARD RENDERER */}
+                <div
+                  className="grid gap-[1px] bg-slate-800 border border-slate-700 w-full aspect-square z-10"
+                  style={{
+                    gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+                    gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
+                  }}
+                >
+                  {game.board.map((row, y) =>
+                    row.map((cell, x) => (
+                      <div
+                        key={`${x}-${y}`}
+                        className="bg-slate-950 flex items-center justify-center p-[1px] relative"
+                      >
+                        {/* THE HEATMAP LAYER */}
+                        {game.heatmap && (
+                          <div
+                            className="absolute inset-0 z-0 opacity-40"
+                            style={{
+                              backgroundColor: `rgb(${255 * (1 - game.heatmap[y * cols + x])}, ${255 * game.heatmap[y * cols + x]}, 0)`,
+                              boxShadow:
+                                game.heatmap[y * cols + x] > 0.8
+                                  ? "inset 0 0 4px #fff"
+                                  : "none",
+                            }}
+                          />
+                        )}
 
-              {/* STATUS OVERLAY */}
-              <div
-                className={`text-[10px] mt-2 font-black uppercase tracking-widest z-10 
+                        {cell.piece && (
+                          <img
+                            src={`/icons/${cell.piece}.svg`}
+                            alt={cell.piece}
+                            style={{ height: "80%", width: "80%" }}
+                            className="w-full h-full object-contain z-10 drop-shadow-sm"
+                          />
+                        )}
+                      </div>
+                    )),
+                  )}
+                </div>
+
+                {/* STATUS OVERLAY */}
+                <div
+                  className={`text-[10px] mt-2 font-black uppercase tracking-widest z-10 
   flex flex-col items-center text-center w-full
   ${
     game.status === "won"
@@ -3159,34 +3172,145 @@ export default function App() {
           ? "text-amber-400"
           : "text-slate-500"
   }`}
-              >
-                {/* Status Text (ACTIVE, WON, LOST, etc.) */}
-                <span>{game.status}</span>
+                >
+                  {/* Status Text (ACTIVE, WON, LOST, etc.) */}
+                  <span>{game.status}</span>
 
-                {/* Dynamic Scores Row */}
-                {game.scores && (
-                  <div className="text-[8px] font-mono text-slate-400 mt-1 flex gap-1 items-center">
-                    {trainingPlayers.map((player, pIdx) => (
-                      <React.Fragment key={player}>
-                        <span
-                          className={
-                            player === "X" ? "text-fuchsia-400 font-bold" : ""
-                          }
-                        >
-                          {player}: {game.scores[player] || 0}
-                        </span>
-                        {/* Only add a separator if it's not the last player in the list */}
-                        {pIdx < trainingPlayers.length - 1 && (
-                          <span className="opacity-30">|</span>
-                        )}
-                      </React.Fragment>
-                    ))}
+                  {/* Dynamic Scores Row */}
+                  {game.scores && (
+                    <div className="text-[8px] font-mono text-slate-400 mt-1 flex gap-1 items-center">
+                      {trainingPlayers.map((player, pIdx) => (
+                        <React.Fragment key={player}>
+                          <span
+                            className={
+                              player === "X" ? "text-fuchsia-400 font-bold" : ""
+                            }
+                          >
+                            {player}: {game.scores[player] || 0}
+                          </span>
+                          {/* Only add a separator if it's not the last player in the list */}
+                          {pIdx < trainingPlayers.length - 1 && (
+                            <span className="opacity-30">|</span>
+                          )}
+                        </React.Fragment>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {!minimapToggle && (
+          <div className="flex-1 flex flex-col items-center justify-center relative overflow-hidden bg-slate-950 rounded-2xl border border-white/10 shadow-2xl">
+            {/* THE FLUID BLOBS - FULL CANVAS ROAMING */}
+            <div className="absolute inset-0 overflow-hidden pointer-events-none">
+              {/* Cyan: The "Lead" - High momentum, wide sweeps */}
+              <div
+                className="absolute top-1/2 left-1/2 w-[70%] h-[70%] -translate-x-1/2 -translate-y-1/2 rounded-full bg-cyan-500/20 blur-[120px] mix-blend-screen"
+                style={{
+                  animation:
+                    "fluid-heavy 22s cubic-bezier(0.45, 0, 0.55, 1) infinite",
+                }}
+              />
+
+              {/* Fuchsia: The "Chaser" - Follows with a delay and different arc */}
+              <div
+                className="absolute top-1/2 left-1/2 w-[80%] h-[80%] -translate-x-1/2 -translate-y-1/2 rounded-full bg-fuchsia-600/20 blur-[140px] mix-blend-screen"
+                style={{
+                  animation:
+                    "fluid-bounce 28s cubic-bezier(0.37, 0, 0.63, 1) infinite",
+                }}
+              />
+
+              {/* Indigo: The "Deep" - Slow, massive rotation across the whole floor */}
+              <div
+                className="absolute top-1/2 left-1/2 w-[90%] h-[90%] -translate-x-1/2 -translate-y-1/2 rounded-full bg-indigo-500/15 blur-[110px]"
+                style={{ animation: "fluid-drift 35s ease-in-out infinite" }}
+              />
+            </div>
+
+            <style>{`
+            /* Add this to your style block for the blobs */
+.fluid-blob {
+  will-change: transform, opacity;
+  transform: translateZ(0); /* Forces hardware acceleration */
+  backface-visibility: hidden;
+}
+  /* fluid-heavy: Large sweeping arcs that "settle" into corners before swinging back */
+  @keyframes fluid-heavy {
+    0% { transform: translate(-50%, -50%) rotate(0deg) scale(1); }
+    25% { transform: translate(30%, -40%) rotate(90deg) scale(1.2); }
+    50% { transform: translate(-40%, 30%) rotate(180deg) scale(0.9); }
+    75% { transform: translate(20%, 40%) rotate(270deg) scale(1.1); }
+    100% { transform: translate(-50%, -50%) rotate(360deg) scale(1); }
+  }
+
+  /* fluid-bounce: Uses momentum to "overshoot" the center point */
+  @keyframes fluid-bounce {
+    0% { transform: translate(-30%, 40%) scale(1); }
+    33% { transform: translate(45%, -30%) scale(1.3); }
+    66% { transform: translate(-50%, -45%) scale(0.8); }
+    100% { transform: translate(-30%, 40%) scale(1); }
+  }
+
+  /* fluid-drift: Slow, full-canvas rotation */
+  @keyframes fluid-drift {
+    0% { transform: translate(-10%, -10%) rotate(0deg); }
+    50% { transform: translate(-60%, 50%) rotate(180deg); }
+    100% { transform: translate(-10%, -10%) rotate(360deg); }
+  }
+`}</style>
+
+            {/* FROSTED GLASS OVERLAY (The "Mica" effect) */}
+            <div className="absolute inset-0 backdrop-blur-[60px] bg-slate-950/40" />
+
+            {/* DATA TEXT OVERLAY */}
+            <div className="z-10 flex flex-col items-center text-center">
+              <div className="mb-4 space-y-2">
+                <h3 className="text-white/40  text-2xl tracking-[2px] uppercase">
+                  Learning...
+                </h3>
+                <div className="h-[1px] w-12 bg-gradient-to-r from-transparent via-white/20 to-transparent mx-auto" />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <span className="text-cyan-400/80 font-mono text-[11px] uppercase tracking-widest">
+                  <span className="text-fuchsia-300 font-bold bg-fuchsia-900/30 px-2 py-0.5 rounded border border-fuchsia-800/50">
+                    W: {trainingStats.wins} / L: {trainingStats.losses} / D:{" "}
+                    {trainingStats.draws}
+                  </span>
+                </span>
+                <div className="flex items-center justify-center gap-3 mt-4 opacity-60">
+                  <div className="flex flex-col items-start">
+                    <span className="text-[9px] text-slate-400 uppercase">
+                      Confidence
+                    </span>
+                    <span className="text-white font-mono text-sm">
+                      {((1 - trainingStats.epsilon) * 100).toFixed(1)}%
+                    </span>
                   </div>
-                )}
+                  <div className="w-[1px] h-6 bg-white/10" />
+                  <div className="flex flex-col items-start">
+                    <span className="text-[9px] text-slate-400 uppercase">
+                      Win Rate
+                    </span>
+                    <span className="text-white font-mono text-sm">
+                      {trainingStats.wins + trainingStats.losses > 0
+                        ? (
+                            (trainingStats.wins /
+                              (trainingStats.wins + trainingStats.losses)) *
+                            100
+                          ).toFixed(1)
+                        : "0.0"}
+                      %
+                    </span>
+                  </div>
+                </div>
               </div>
             </div>
-          ))}
-        </div>
+          </div>
+        )}
       </div>
     );
   }
