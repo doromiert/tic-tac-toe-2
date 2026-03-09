@@ -74,6 +74,7 @@ export default function App() {
     losses: 0,
     draws: 0,
   });
+  const [miniMapGridSize, setMiniMapGridSize] = useState(10);
   const [savedCampaigns, setSavedCampaigns] = useState([]);
   const [rotConfig, setRotConfig] = useState({ x: 50, y: 50, mult: 100 });
   const rtcRef = useRef(null);
@@ -3060,6 +3061,12 @@ export default function App() {
             </span>
           </div>
           <div className="flex gap-4">
+            <input
+              type="number"
+              value={miniMapGridSize}
+              onChange={(e) => setMiniMapGridSize(e.target.value)}
+              className="w-16 bg-slate-800 text-white p-1 rounded border border-slate-700 text-center text-xs"
+            />
             <button
               className="px-4 py-2 bg-rose-600/20 text-rose-400 border border-rose-500/50 hover:bg-rose-600/40 rounded font-bold text-xs transition-colors flex items-center gap-2"
               onClick={async () => {
@@ -3082,7 +3089,12 @@ export default function App() {
         </div>
 
         {/* MATRIX GRID */}
-        <div className="grid grid-cols-10 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
+        <div
+          style={{
+            gridTemplateColumns: `repeat(${miniMapGridSize}, minmax(0, 1fr))`,
+          }}
+          className={`grid gap-4`}
+        >
           {trainingBoards.map((game, index) => (
             <div
               key={index}
