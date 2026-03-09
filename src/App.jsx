@@ -528,6 +528,7 @@ export default function App() {
   // --- NEURAL TRAINING STATES ---
   const [parallelCount, setParallelCount] = useState(4); // Default 4 games
   const [trainingBoards, setTrainingBoards] = useState([]);
+  const [latestLoss, setLatestLoss] = useState(null);
   const [trainingEpoch, setTrainingEpoch] = useState(0);
   const [neuralModel, setNeuralModel] = useState(null); // Will hold your TF.js model or custom weights
 
@@ -676,20 +677,30 @@ export default function App() {
       }
     });
     const shape = [states.length, cols * rows];
-
     const xs = tf.tensor2d(states, shape);
     const ys = tf.tensor2d(targets, shape);
 
-    // 2. Use 'yieldEvery: "auto"' or "batch" to tell TF.js
-    // to release the GPU periodically so the UI doesn't freeze
-    await modelRef.current.fit(xs, ys, {
+    // 1. Train ONCE and capture the history
+    const h = await modelRef.current.fit(xs, ys, {
       epochs: 1,
-      verbose: 0,
+      verbose: 0, // Keep this 0 so it doesn't spam your console
       yieldEvery: "batch",
     });
 
+    // 2. Extract the loss
+    const lossValue = h.history.loss[0];
+    if (!isNaN(lossValue)) {
+      setLatestLoss(lossValue);
+      // Keep only the last 20 values
+      setLossHistory((prev) => [...prev.slice(-19), lossValue]);
+    }
+
+    // 3. Clean up the VRAM AFTER we are done with the math
     xs.dispose();
     ys.dispose();
+
+    // 4. Give the UI one more frame to catch up
+    await tf.nextFrame();
 
     // 3. Give the UI one more frame to catch up
     await tf.nextFrame();
@@ -697,6 +708,7 @@ export default function App() {
 
   const isBuildMode = appMode === "editor" && !isPlaytesting;
 
+  const [lossHistory, setLossHistory] = useState([]);
   const [ghostBoard, setGhostBoard] = useState(null);
   const [ghostTrails, setGhostTrails] = useState([]);
 
@@ -1683,12 +1695,12 @@ export default function App() {
       true,
     );
     allTrails.push(...initialTrails);
-    updateSwitches(b);
+    if (!isTraining) updateSwitches(b);
 
     if (gameMode === "cascade") runGravity(b, allTrails, true, cols, rows);
 
     tickMachines(b, allTrails, true, cols, rows, activePlayers, null);
-    updateSwitches(b);
+    if (!isTraining) updateSwitches(b);
 
     if (gameMode === "cascade") runGravity(b, allTrails, true, cols, rows);
 
@@ -2119,7 +2131,7 @@ export default function App() {
               }
               current.isSim = false;
               gravityChanged = true;
-              updateSwitches(b);
+              udateSwitches(b);
             }
           }
         }
@@ -3729,7 +3741,42 @@ export default function App() {
                       %
                     </span>
                   </div>
+                  <div className="w-[1px] h-6 bg-white/10" />
+                  <div className="flex flex-col items-start">
+                    <span className="text-[9px] text-slate-400 uppercase">
+                      Network Loss
+                    </span>
+                    <span
+                      className={`font-mono text-sm ${latestLoss === 0 ? "text-slate-500" : "text-white"}`}
+                    >
+                      {latestLoss === null || latestLoss === 0
+                        ? "INITIALIZING..."
+                        : latestLoss.toFixed(6)}
+                    </span>
+                  </div>
+                  <div className="h-8 w-24 mt-1 bg-white/10 rounded flex items-end px-1 overflow-hidden">
+                    <svg
+                      className="w-full h-full"
+                      preserveAspectRatio="none"
+                      viewBox="0 0 100 100"
+                    >
+                      <polyline
+                        fill="none"
+                        stroke="#22d3ee" /* Cyan-400 */
+                        strokeWidth="3"
+                        points={lossHistory
+                          .map((loss, i) => {
+                            const x = (i / (lossHistory.length - 1)) * 100;
+                            // Scale loss so 0 is at bottom (100) and 1.0 is at top (0)
+                            const y = 100 - Math.min(100, (loss / 2) * 100);
+                            return `${x},${y}`;
+                          })
+                          .join(" ")}
+                      />
+                    </svg>
+                  </div>
                 </div>
+
                 <div
                   className="z-10 flex flex-col items-center text-center "
                   style={{ width: "90vw" }}
@@ -4486,87 +4533,151 @@ export default function App() {
       return null;
 
     let moveUtilities = [];
+    if (!isTraining) {
+      validMoves.forEach((move) => {
+        let utility = 0;
+        let simResult = simulateTurn(
+          move.x,
+          move.y,
+          aiPiece,
+          board,
+          activePlayers,
+          cols,
+          rows,
+          gameMode,
+        );
+        let simBoard = simResult.board;
+        let oppPiecesLost = 0;
+        let aiPiecesGained = 0;
 
-    validMoves.forEach((move) => {
-      let utility = 0;
-      let simResult = simulateTurn(
-        move.x,
-        move.y,
-        aiPiece,
-        board,
-        activePlayers,
-        cols,
-        rows,
-        gameMode,
-      );
-      let simBoard = simResult.board;
-      let oppPiecesLost = 0;
-      let aiPiecesGained = 0;
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            let oldCell = board[r][c];
+            let newCell = simBoard[r][c];
 
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          let oldCell = board[r][c];
-          let newCell = simBoard[r][c];
-
-          if (oldCell.piece !== newCell.piece) {
-            if (newCell.piece === aiPiece) {
-              aiPiecesGained++;
-            }
-            if (
-              oldCell.piece &&
-              opponents.includes(oldCell.piece) &&
-              newCell.piece !== oldCell.piece
-            ) {
-              oppPiecesLost++;
-            }
-          } // MODE ADAPTATION: Zone Control Targets
-
-          if (
-            gameMode === "zone_control" &&
-            newCell.isTarget &&
-            newCell.piece === aiPiece
-          ) {
-            utility += 50000;
-          }
-
-          if (!oldCell.dead && newCell.dead && newCell.piece === aiPiece)
-            utility += 2000000;
-          if (newCell.isTarget && newCell.piece === aiPiece) utility += 50;
-
-          if (newCell.piece === aiPiece && memory.fearOfMachines > 0.5) {
-            const isMachine = (type) =>
-              ["dup", "rot_cw", "rot_ccw", "mov", "switch"].includes(type);
-            [
-              [0, 1],
-              [1, 0],
-              [0, -1],
-              [-1, 0],
-            ].forEach(([dx, dy]) => {
-              let nx = c + dx,
-                ny = r + dy;
-              if (
-                nx >= 0 &&
-                nx < cols &&
-                ny >= 0 &&
-                ny < rows &&
-                isMachine(simBoard[ny][nx].type)
-              ) {
-                utility -= 500 * memory.fearOfMachines;
+            if (oldCell.piece !== newCell.piece) {
+              if (newCell.piece === aiPiece) {
+                aiPiecesGained++;
               }
-            });
+              if (
+                oldCell.piece &&
+                opponents.includes(oldCell.piece) &&
+                newCell.piece !== oldCell.piece
+              ) {
+                oppPiecesLost++;
+              }
+            } // MODE ADAPTATION: Zone Control Targets
+
+            if (
+              gameMode === "zone_control" &&
+              newCell.isTarget &&
+              newCell.piece === aiPiece
+            ) {
+              utility += 50000;
+            }
+
+            if (!oldCell.dead && newCell.dead && newCell.piece === aiPiece)
+              utility += 2000000;
+            if (newCell.isTarget && newCell.piece === aiPiece) utility += 50;
+
+            if (newCell.piece === aiPiece && memory.fearOfMachines > 0.5) {
+              const isMachine = (type) =>
+                ["dup", "rot_cw", "rot_ccw", "mov", "switch"].includes(type);
+              [
+                [0, 1],
+                [1, 0],
+                [0, -1],
+                [-1, 0],
+              ].forEach(([dx, dy]) => {
+                let nx = c + dx,
+                  ny = r + dy;
+                if (
+                  nx >= 0 &&
+                  nx < cols &&
+                  ny >= 0 &&
+                  ny < rows &&
+                  isMachine(simBoard[ny][nx].type)
+                ) {
+                  utility -= 500 * memory.fearOfMachines;
+                }
+              });
+            }
           }
         }
-      }
 
-      utility += oppPiecesLost * 800; // MODE ADAPTATION: Turf Wars (Raw tile volume)
+        utility += oppPiecesLost * 800; // MODE ADAPTATION: Turf Wars (Raw tile volume)
 
-      if (gameMode === "turf_wars") {
-        utility += aiPiecesGained * 5000;
-      }
-      if (aiPiecesGained > 1) utility += (aiPiecesGained - 1) * 20000;
-      if (aiPiecesGained === 0 && board[move.y][move.x].piece !== aiPiece)
-        utility -= 5000;
+        if (gameMode === "turf_wars") {
+          utility += aiPiecesGained * 5000;
+        }
+        if (aiPiecesGained > 1) utility += (aiPiecesGained - 1) * 20000;
+        if (aiPiecesGained === 0 && board[move.y][move.x].piece !== aiPiece)
+          utility -= 5000;
 
+        let aggroMod =
+          memory.aggressiveness *
+          (memory.strategy === "aggressive" || memory.strategy === "berserk"
+            ? 1.5
+            : memory.strategy === "defensive_attrition"
+              ? 0.5
+              : 1.0);
+        let defMod =
+          memory.defensiveness *
+          (memory.strategy === "defensive"
+            ? 1.5
+            : memory.strategy === "combo_baiting"
+              ? 0.8
+              : memory.strategy === "berserk"
+                ? 0.0
+                : 1.0);
+        defMod *= 1 + memory.blockedCount * 0.15; // EVALUATE OWN GAINS (Offensive checks on simBoard)
+        // High risk = higher greed for own combos, lower priority for blocking
+        // --- RISKINESS MODIFIERS (Greed vs Safety) ---
+        let greedMod = 1.0 + memory.riskiness * 0.8; // Scales up to 1.8x
+        let safetyMod = 1.0 - memory.riskiness * 0.6; // Scales down to 0.4x
+
+        let moveAggroMod = aggroMod * greedMod;
+        let moveDefMod = defMod * safetyMod; // EVALUATE OWN GAINS (Offensive checks on simBoard)
+
+        let res = checkLinePotential(move.x, move.y, aiPiece, simBoard); // KILL INSTINCT
+
+        if (res.score >= 1000000) {
+          moveAggroMod = 2.0; // "I am winning right now"
+          moveDefMod = 0.0; // "Defense is irrelevant"
+        } else if (res.score >= 40000) {
+          // If building a strong starter (Open 2 or 3), a risky bot heavily overvalues it
+          moveAggroMod *= 1.0 + memory.riskiness;
+        }
+
+        utility += res.score * moveAggroMod;
+        utility += res.extraTurns * 2000000;
+
+        let cx = move.x;
+        let ry = move.y; // EVALUATE DEFENSIVE VALUE (Blocking the opponent)
+
+        opponents.forEach((opp) => {
+          let p = memory.opponentProfiles[opp];
+          let threat = checkLinePotential(cx, ry, opp, board).score; // SELF-PRESERVATION OVERRIDE:
+          // Even a risky AI isn't stupid. If the opponent has a kill shot, wake up and block.
+          let dynamicDefMod = moveDefMod;
+          if (threat >= 1000000) {
+            dynamicDefMod = Math.max(1.0, defMod);
+          }
+
+          utility += threat * (p.perceivedSkill || 0.1) * dynamicDefMod;
+        });
+
+        if (difficulty === "drunk") utility += Math.random() * 2000;
+        else if (difficulty === "easy") utility += Math.random() * 500;
+        else if (difficulty === "normal") utility += Math.random() * 100;
+
+        moveUtilities.push({ move, utility });
+      });
+    } else {
+      // --- THE FAST PATH (For Neural Training / No Lag) ---
+
+      // OPTIMIZATION: Hoist the personality modifiers OUTSIDE the loop.
+      // They don't change per-move, so we don't need to do the math 50 times.
       let aggroMod =
         memory.aggressiveness *
         (memory.strategy === "aggressive" || memory.strategy === "berserk"
@@ -4583,49 +4694,65 @@ export default function App() {
             : memory.strategy === "berserk"
               ? 0.0
               : 1.0);
-      defMod *= 1 + memory.blockedCount * 0.15; // EVALUATE OWN GAINS (Offensive checks on simBoard)
-      // High risk = higher greed for own combos, lower priority for blocking
-      // --- RISKINESS MODIFIERS (Greed vs Safety) ---
-      let greedMod = 1.0 + memory.riskiness * 0.8; // Scales up to 1.8x
-      let safetyMod = 1.0 - memory.riskiness * 0.6; // Scales down to 0.4x
+      defMod *= 1 + memory.blockedCount * 0.15;
 
-      let moveAggroMod = aggroMod * greedMod;
-      let moveDefMod = defMod * safetyMod; // EVALUATE OWN GAINS (Offensive checks on simBoard)
+      let greedMod = 1.0 + memory.riskiness * 0.8;
+      let safetyMod = 1.0 - memory.riskiness * 0.6;
+      let baseMoveAggroMod = aggroMod * greedMod;
+      let baseMoveDefMod = defMod * safetyMod;
 
-      let res = checkLinePotential(move.x, move.y, aiPiece, simBoard); // KILL INSTINCT
+      validMoves.forEach((move) => {
+        let utility = 0;
+        let moveAggroMod = baseMoveAggroMod;
+        let moveDefMod = baseMoveDefMod;
 
-      if (res.score >= 1000000) {
-        moveAggroMod = 2.0; // "I am winning right now"
-        moveDefMod = 0.0; // "Defense is irrelevant"
-      } else if (res.score >= 40000) {
-        // If building a strong starter (Open 2 or 3), a risky bot heavily overvalues it
-        moveAggroMod *= 1.0 + memory.riskiness;
-      }
+        // 1. MUTATE THE REAL BOARD IN-PLACE (No cloning!)
+        board[move.y][move.x].piece = aiPiece;
 
-      utility += res.score * moveAggroMod;
-      utility += res.extraTurns * 2000000;
+        // 2. OFFENSIVE EVALUATION (Using your exact heuristic)
+        let res = checkLinePotential(move.x, move.y, aiPiece, board);
 
-      let cx = move.x;
-      let ry = move.y; // EVALUATE DEFENSIVE VALUE (Blocking the opponent)
-
-      opponents.forEach((opp) => {
-        let p = memory.opponentProfiles[opp];
-        let threat = checkLinePotential(cx, ry, opp, board).score; // SELF-PRESERVATION OVERRIDE:
-        // Even a risky AI isn't stupid. If the opponent has a kill shot, wake up and block.
-        let dynamicDefMod = moveDefMod;
-        if (threat >= 1000000) {
-          dynamicDefMod = Math.max(1.0, defMod);
+        // KILL INSTINCT OVERRIDE
+        if (res.score >= 1000000) {
+          moveAggroMod = 2.0;
+          moveDefMod = 0.0;
+        } else if (res.score >= 40000) {
+          moveAggroMod *= 1.0 + memory.riskiness;
         }
 
-        utility += threat * (p.perceivedSkill || 0.1) * dynamicDefMod;
+        utility += res.score * moveAggroMod;
+        utility += res.extraTurns * 2000000;
+
+        // 3. DEFENSIVE EVALUATION (The "Block" Check)
+        // To see how dangerous the enemy would be here, we temporarily swap
+        // our piece for theirs, check the score, and add it to utility!
+        opponents.forEach((opp) => {
+          board[move.y][move.x].piece = opp; // Pretend it's the enemy
+
+          let p = memory.opponentProfiles[opp];
+          let threat = checkLinePotential(move.x, move.y, opp, board).score;
+
+          let dynamicDefMod = moveDefMod;
+          if (threat >= 1000000) {
+            dynamicDefMod = Math.max(1.0, defMod); // Wake up and block!
+          }
+
+          utility +=
+            threat * (p ? p.perceivedSkill || 0.1 : 0.1) * dynamicDefMod;
+        });
+
+        // 4. UNDO THE MUTATION (Crucial: leave no trace)
+        board[move.y][move.x].piece = null;
+
+        // Add difficulty jitter
+        if (difficulty === "drunk") utility += Math.random() * 2000;
+        else if (difficulty === "easy") utility += Math.random() * 500;
+        else if (difficulty === "normal") utility += Math.random() * 100;
+
+        // Push to the same array your sorting logic uses below
+        moveUtilities.push({ move, utility });
       });
-
-      if (difficulty === "drunk") utility += Math.random() * 2000;
-      else if (difficulty === "easy") utility += Math.random() * 500;
-      else if (difficulty === "normal") utility += Math.random() * 100;
-
-      moveUtilities.push({ move, utility });
-    });
+    }
 
     // --- 6. ERROR PRONE SELECTION & STATE SAVING ---
     moveUtilities.sort((a, b) => b.utility - a.utility);
@@ -6286,4 +6413,65 @@ export default function App() {
       </div>
     </div>
   );
+}
+function getFastLineScore(board, startX, startY, playerPiece, cols, rows) {
+  let totalScore = 0;
+  let linesFormed = 0;
+
+  // The 4 axes: Horizontal, Vertical, Diagonal-Down, Diagonal-Up
+  const axes = [
+    [
+      { dx: 1, dy: 0 },
+      { dx: -1, dy: 0 },
+    ],
+    [
+      { dx: 0, dy: 1 },
+      { dx: 0, dy: -1 },
+    ],
+    [
+      { dx: 1, dy: 1 },
+      { dx: -1, dy: -1 },
+    ],
+    [
+      { dx: 1, dy: -1 },
+      { dx: -1, dy: 1 },
+    ],
+  ];
+
+  for (let i = 0; i < axes.length; i++) {
+    let count = 1; // The piece we just placed
+    for (let d = 0; d < 2; d++) {
+      let dir = axes[i][d];
+      let cx = startX + dir.dx;
+      let cy = startY + dir.dy;
+
+      // Raycast outward until we hit an empty space, a wall, or an enemy
+      while (
+        cx >= 0 &&
+        cx < cols &&
+        cy >= 0 &&
+        cy < rows &&
+        board[cy][cx].piece === playerPiece &&
+        !board[cy][cx].dead
+      ) {
+        count++;
+        cx += dir.dx;
+        cy += dir.dy;
+      }
+    }
+
+    if (count >= 3) {
+      totalScore += count;
+      linesFormed++;
+    }
+  }
+
+  let evalScore = totalScore;
+  // Replicate your "Extra Turns" reward logic
+  if (linesFormed > 0) {
+    let extraTurns = linesFormed - 1 + (totalScore > 3 * linesFormed ? 1 : 0);
+    evalScore += extraTurns * 10;
+  }
+
+  return evalScore;
 }
