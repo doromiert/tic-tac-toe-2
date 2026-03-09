@@ -903,6 +903,10 @@ export default function App() {
     }
   };
 
+  // Add to your state/refs
+  const globalReplayBuffer = useRef([]);
+  const MAX_BUFFER_SIZE = 20000;
+
   // Figma Canvas State
   const [pan, setPan] = useState({ x: 50, y: 50 });
   const [zoom, setZoom] = useState(1);
@@ -2569,6 +2573,7 @@ export default function App() {
     // Reset the input so you can load a different model later if needed
     e.target.value = null;
   };
+
   useEffect(() => {
     if (appMode !== "neural_training") {
       isTraining.current = false;
@@ -2607,26 +2612,46 @@ export default function App() {
         if (game.status !== "active") {
           // --- ADAPTIVE EPSILON LOGIC ---
           if (game.status === "won") {
-            // Win: Become more confident/stubborn (Lower Epsilon)
-            // We drop it by a percentage to "lock in" the winning strategy
+            // Wins drop epsilon aggressively to exploit the success
             epsilonRef.current = Math.max(
               MIN_EPSILON,
-              epsilonRef.current * 0.98,
+              epsilonRef.current * 0.9,
             );
             statsRef.current.wins++;
           } else if (game.status === "lost") {
-            // Loss: Increase curiosity/frustration (Raise Epsilon)
-            // We add a flat "bump" to force it to look at new tiles
-            epsilonRef.current = Math.min(0.5, epsilonRef.current + 0.05);
+            // Losses increase epsilon, but we'll cap it at 0.4 so it's not COMPLETELY random
+            epsilonRef.current = Math.min(0.4, epsilonRef.current + 0.02);
             statsRef.current.losses++;
           } else if (game.status === "draw") {
-            // Draw: Slight nudge toward exploration, but less than a loss
-            epsilonRef.current = Math.min(0.5, epsilonRef.current + 0.01);
+            // Draws keep epsilon stable to refine the current tie-state
+            epsilonRef.current = Math.max(
+              MIN_EPSILON,
+              epsilonRef.current * 0.99,
+            );
             statsRef.current.draws++;
           }
 
           // Train and Reset as usual...
-          await trainOnMemoryBatch(game.memory);
+          if (game.status !== "active") {
+            globalReplayBuffer.current.push(...game.memory);
+
+            // Keep the buffer from exploding (memory management)
+            if (globalReplayBuffer.current.length > MAX_BUFFER_SIZE) {
+              globalReplayBuffer.current.splice(0, game.memory.length);
+            }
+
+            // --- NATIVE SAMPLE LOGIC (Replaces Lodash _) ---
+            const batchSize = Math.min(globalReplayBuffer.current.length, 128);
+            const batch = [];
+            for (let j = 0; j < batchSize; j++) {
+              const randomIndex = Math.floor(
+                Math.random() * globalReplayBuffer.current.length,
+              );
+              batch.push(globalReplayBuffer.current[randomIndex]);
+            }
+
+            await trainOnMemoryBatch(batch);
+          }
           setTrainingEpoch((e) => e + 1);
 
           gamesRef.current[i] = {
@@ -2677,29 +2702,42 @@ export default function App() {
           game.board = simResult.board;
           game.scores = simResult.scores;
 
-          // Reward Calculation (Now based on actual engine scores)
-          let reward = 0; // Base survival
+          // --- BALANCED REWARD ENGINE ---
+          let reward = 0.1; // Small incentive just for making a valid move
 
-          // Reward for scoring points
-          if (game.scores.X > (game.lastScore || 0)) {
-            reward += (game.scores.X - (game.lastScore || 0)) * 5;
+          // 1. Scoring Reward: Encourage active play
+          const pointsGained = game.scores.X - (game.lastScore || 0);
+          if (pointsGained > 0) {
+            reward += pointsGained * 2.0; // Significant reward for scoring
           }
+
+          // 2. Combo Reward: Exponentially reward massive chain reactions
+          if (simResult.extraTurns > 0) {
+            reward += Math.pow(simResult.extraTurns, 2) * 3.0;
+            // 1 extra turn = +3, 2 extra turns = +12, 3 extra turns = +27...
+          }
+
           game.lastScore = game.scores.X;
 
+          // 3. Match Outcome: The ultimate signal
           if (simResult.matchOver) {
             let enemyMax = Math.max(
               game.scores.O || 0,
               game.scores.T || 0,
               game.scores.S || 0,
             );
+
             if (game.scores.X > enemyMax) {
-              reward = 1.0; // Pure win
+              game.status = "won";
+              reward += 50.0; // The Holy Grail
             } else if (game.scores.X < enemyMax) {
-              reward = -1.0; // Pure loss
+              game.status = "lost";
+              reward -= 30.0; // Punish losing, but less than the win reward
             } else {
-              reward = 0.5; // Draw is better than losing, but not quite winning
+              game.status = "draw";
+              reward += 5.0; // Draws are better than nothing
             }
-          } // Check Win/Loss Condition
+          }
           if (simResult.matchOver) {
             let enemyMax = Math.max(
               game.scores.O || 0,
@@ -2803,7 +2841,7 @@ export default function App() {
           return { ...g, heatmap };
         });
         setTrainingBoards(updatedBoards);
-        setTrainingStats({ ...statsRef.current });
+        setTrainingStats({ ...statsRef.current, epsilon: epsilonRef.current });
       }
     }, 1000 / 15);
 
@@ -3016,6 +3054,9 @@ export default function App() {
             <span className="text-fuchsia-300 font-bold bg-fuchsia-900/30 px-2 py-0.5 rounded border border-fuchsia-800/50">
               W: {trainingStats.wins} / L: {trainingStats.losses} / D:{" "}
               {trainingStats.draws}
+            </span>
+            <span className="text-cyan-400 font-mono text-[10px] ml-2">
+              CURIOSITY (EPS): {(trainingStats.epsilon * 100).toFixed(1)}%
             </span>
           </div>
           <div className="flex gap-4">
