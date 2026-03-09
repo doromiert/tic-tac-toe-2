@@ -3545,27 +3545,35 @@ export default function App() {
               style={{ width: "90vw" }}
             >
               <div className="mb-4 space-y-2" style={{ width: "90vw" }}>
-                <div className="relative h-12 w-full flex items-center justify-center">
-                  {/* THE "LEARNING" LAYER */}
-                  <p
-                    className={`
-      absolute text-4xl font-light tracking-tight transition-all duration-700 animate-shimmer-wave
-      ${isFlashing ? "opacity-0 scale-95 blur-md" : "opacity-100 scale-100 blur-0"}
-    `}
+                <div className="relative h-12 w-full flex items-center justify-center overflow-visible">
+                  {/* THE LAYERED WAVE */}
+                  <div
+                    className={`flex transition-all duration-700 ${isFlashing ? "opacity-0 blur-md scale-95" : "opacity-100 blur-0 scale-100"}`}
+                    style={{ "--wave-duration": "5s" }}
                   >
-                    Learning...
-                  </p>
+                    {"Learning...".split("").map((char, i) => (
+                      <span
+                        key={i}
+                        className="inline-block animate-smooth-pulse text-3xl"
+                        style={{
+                          "--index": i,
+                          // Remove the fixed width that made it tiny
+                          // Instead, use a very large line-height to give the scaling room
+                          animationDelay: `calc(var(--index) * 0.05s)`,
+                          lineHeight: "1.5",
+                          padding: "0 2px",
+                          display: "inline-block",
+                          transformOrigin: "bottom center",
+                        }}
+                      >
+                        {char === " " ? "\u00A0" : char}
+                      </span>
+                    ))}
+                  </div>
 
-                  {/* THE "VICTORY" LAYER */}
+                  {/* THE VICTORY LAYER (Keep your existing code for this) */}
                   <p
-                    className={`
-      absolute text-4xl font-bold tracking-tighter transition-all duration-500 text-white
-      ${isFlashing ? "opacity-100 scale-110 blur-0" : "opacity-0 scale-125 blur-xl"}
-    `}
-                    style={{
-                      textShadow:
-                        "0 0 30px rgba(255,255,255,0.8), 0 0 60px rgba(255,255,255,0.4)",
-                    }}
+                    className={`absolute text-4xl font-bold transition-all duration-500 ${isFlashing ? "opacity-100 scale-110" : "opacity-0 scale-125 blur-xl"}`}
                   >
                     VICTORY!
                   </p>
@@ -3584,8 +3592,41 @@ export default function App() {
         background-position: -150% 0;
     }
 }
-                
-     
+@keyframes smooth-wave {
+  /* 0% to 30%: The Wait */
+  0%, 30% {
+    transform: scale(1) translateZ(0);
+    opacity: 0.5;
+  }
+  /* 40% to 60%: The Long Wave (20% of the 5s loop = 1 full second of "bigness") */
+  50% {
+    transform: scale(1.1) translateZ(0);
+    opacity: 1;
+  }
+  /* 70% to 100%: Back to Wait */
+  70%, 100% {
+    transform: scale(1) translateZ(0);
+    opacity: 0.5;
+  }
+}
+
+.animate-smooth-pulse {
+  display: inline-block;
+  animation: smooth-wave 5s infinite;
+  animation-delay: calc(var(--index) * 0.1s);
+  
+  /* THIS FIXES THE Y-AXIS JITTER */
+  /* Anchors the scale to the bottom so it only grows 'up' */
+  transform-origin: bottom center; 
+  
+  /* Hardware acceleration trio */
+  will-change: transform;
+  backface-visibility: hidden;
+  -webkit-font-smoothing: antialiased;
+  
+  /* Prevents font-weight shifting during scale */
+  font-synthesis: none; 
+}
                 
 .animate-shimmer-wave {
   animation: text-shimmer 5s linear infinite;
