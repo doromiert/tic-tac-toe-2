@@ -4052,7 +4052,7 @@ export default function App() {
           let maxOppThreat = 0;
           let blockedAi = false;
           oppNewMoves.forEach((pos) => {
-            let analysis = getFastLineScore(pos.x, pos.y, opp, board);
+            let analysis = getFastLineScore(board, pos.x, pos.y, opp);
             if (analysis > maxOppThreat) maxOppThreat = analysis;
             if (
               memory.intendedTargets.some((t) => t.x === pos.x && t.y === pos.y)
