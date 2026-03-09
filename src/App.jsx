@@ -539,6 +539,18 @@ export default function App() {
   const isTraining = useRef(false);
   const trainingLoopId = useRef(null);
   const uiSyncIntervalId = useRef(null);
+  useEffect(() => {
+    const saveInterval = setInterval(
+      async () => {
+        if (modelRef.current) {
+          await modelRef.current.save("localstorage://tt2-v1-overnight");
+          console.log("Auto-save complete. Brain secured.");
+        }
+      },
+      1000 * 60 * 15,
+    );
+    return () => clearInterval(saveInterval);
+  }, []);
 
   // RL Hyperparameters
   const epsilonRef = useRef(1.0); // Exploration rate (starts at 100% random)
@@ -2763,7 +2775,7 @@ export default function App() {
       modelRef.current = loadedModel;
 
       // Drop the exploration rate down so it actually uses its brain instead of moving randomly
-      epsilonRef.current = 0.1;
+      epsilonRef.current = Math.max(0.01, epsilonRef.current * 0.9999);
 
       console.log("Neural brain transplanted successfully.");
       alert("Model loaded! The bot is ready to fight.");
