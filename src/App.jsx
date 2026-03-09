@@ -102,7 +102,29 @@ export default function App() {
   const [vramUsage, setVramUsage] = useState({ bytes: 0, tensors: 0 });
 
   const tips = [
-    "The neural bot learns by playing procedural bots, refining its strategy.",
+    "Buna ziua frate!",
+    "Buna dimineața oamenii buni",
+    "2137",
+    "Polska gurom prawom lewom i dołem!",
+    "jakka jereie xyjexei je?",
+    "The neural bot's training speed can be adjusted by changing the number of parallel simulations. More parallel games mean faster learning but higher resource usage.",
+    "Batteries not included.",
+    "Wanna touch my tip? No, not that kind of tip you weirdo.",
+    "The AI's thought process is visualized in real-time as it trains, with heatmaps showing which moves it considers most valuable.",
+    "fortnayt",
+    "The background of the training screen is actually a visualization of how well the AI is doing.",
+    "This project is actually a part of Negative Zero!",
+    "Unlike what you might assume, the neural interface isn't actually mining crypto.",
+    "Low FPS? Clearly you don't have a powerful enough GPU. Get with the times!",
+    "Combos grant you an extra turn per each additional symbol + each additional line. Try to chain a double 5-combo for 5 extra turns!",
+    "Duplicators are the only piece in this game that can replace tiles that already scored. Use them wisely to mess your enemies' plans up and score big!",
+    "If you got this tip, dm doromiert on telegram, discord, twitter or xmpp with a screenshot of this tip to get a secret prize!",
+    "React is actually hitler.",
+    "oi loav clankuhs",
+    "\"Milo\" isn't actually a name, the real name's bob",
+    "If the AI scores while it's still doing badly, a cool animation will appear!",
+    "RAM actually doesn't cost enough so here you go, train some clankers!",
+    "The neural bot learns by playing against procedural bots, refining its strategy.",
     "Curiosity (epsilon) starts high and drops as the bot gets smarter.",
     "Parallel simulations accelerate learning through massive data variety.",
     "Heatmaps show exactly what the bot is 'thinking' about each tile.",
@@ -3580,7 +3602,7 @@ export default function App() {
                   </div>
 
                   {/* Animated Tip Container */}
-                  <div className="relative h-16 w-full flex justify-center overflow-hidden">
+                  <div className="relative h-32 w-full flex justify-center overflow-hidden">
                     <AnimatePresence mode="wait">
                       <motion.div
                         key={tipIndex}
