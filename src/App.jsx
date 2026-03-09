@@ -2428,17 +2428,15 @@ export default function App() {
 
       dirs.forEach(([dx, dy]) => {
         let segment = [];
-        let coords = [];
+        let coords = []; // Extract a 9-cell segment centered at (x, y)
 
-        // Extract a 9-cell segment centered at (x, y)
         for (let i = -4; i <= 4; i++) {
           let cx = x + i * dx;
           let cy = y + i * dy;
 
           if (cx >= 0 && cx < cols && cy >= 0 && cy < rows) {
             let cell = b[cy][cx];
-            coords.push({ x: cx, y: cy });
-            // Treat Void, Dead, and Trash as unplayable solid blocks
+            coords.push({ x: cx, y: cy }); // Treat Void, Dead, and Trash as unplayable solid blocks
             if (cell.type === "void" || cell.dead || cell.type === "trash") {
               segment.push("B");
             } else if (cell.piece === pieceToCheck || cell.type === "neutral") {
@@ -2458,60 +2456,62 @@ export default function App() {
         let dirScore = 0;
         let dirThreats = 0;
         let hasRunway = false;
-        let bestPath = [];
+        let bestPath = []; // --- DYNAMIC WINDOW SCALING ---
+        // Slide windows of sizes 5 down to 1. This allows the AI to see
+        // bounded 3s and 4s inside incredibly dense late-game boards!
 
-        // Slide a 5-cell window across the 9-cell segment to detect gap-combos
-        for (let start = 0; start <= 4; start++) {
-          let win = segment.slice(start, start + 5);
-          if (win.includes("B")) continue; // This 5-cell window is blocked
+        for (let size = 5; size >= 1; size--) {
+          // Calculate valid start bounds to ensure the center piece (index 4) is always included
+          let minStart = Math.max(0, 4 - size + 1);
+          let maxStart = Math.min(4, 9 - size);
 
-          hasRunway = true;
-          let pCount = win.filter((c) => c === "P").length;
+          for (let start = minStart; start <= maxStart; start++) {
+            let win = segment.slice(start, start + size);
+            if (win.includes("B")) continue; // Only skip if THIS specific smaller window is blocked
 
-          if (pCount > maxPieces) {
-            maxPieces = pCount;
-            bestPath = coords.slice(start, start + 5).filter((c) => c !== null);
-          }
+            hasRunway = true;
+            let pCount = win.filter((c) => c === "P").length;
 
-          // Check boundaries to see if the window can expand or is open
-          let leftOpen = start > 0 && segment[start - 1] === "E";
-          let rightOpen = start + 5 < 9 && segment[start + 5] === "E";
-          let openEnds = (leftOpen ? 1 : 0) + (rightOpen ? 1 : 0);
-
-          let windowScore = 0;
-          let windowThreats = 0;
-
-          // Combo and Threat Analysis
-          if (pCount === 5) {
-            windowScore = 5000000;
-            windowThreats = 3;
-          } else if (pCount === 4) {
-            // Open 4 or Blocked 4 are both deadly (1 move away from win/ET)
-            windowScore = openEnds > 0 ? 1500000 : 1000000;
-            windowThreats = 2;
-          } else if (pCount === 3) {
-            if (openEnds === 2) {
-              windowScore = 200000; // Unstoppable open 3
-              windowThreats = 1;
-            } else if (openEnds === 1) {
-              windowScore = 100000; // Blockable 3
-              windowThreats = 0.5;
-            } else {
-              windowScore = 50000; // 3 pieces in a window, but capped
+            if (pCount > maxPieces) {
+              maxPieces = pCount;
+              bestPath = coords
+                .slice(start, start + size)
+                .filter((c) => c !== null);
             }
-          } else if (pCount === 2) {
-            if (openEnds === 2) {
-              windowScore = 40000; // Strong starter
-            } else {
-              windowScore = 5000;
-            }
-          } else if (pCount === 1) {
-            windowScore = 500;
-          }
 
-          if (windowScore > dirScore) {
-            dirScore = windowScore;
-            dirThreats = windowThreats;
+            let leftOpen = start > 0 && segment[start - 1] === "E";
+            let rightOpen = start + size < 9 && segment[start + size] === "E";
+            let openEnds = (leftOpen ? 1 : 0) + (rightOpen ? 1 : 0);
+
+            let windowScore = 0;
+            let windowThreats = 0;
+
+            if (pCount === 5) {
+              windowScore = 5000000;
+              windowThreats = 3;
+            } else if (pCount === 4) {
+              windowScore = openEnds > 0 ? 1500000 : 1000000;
+              windowThreats = 2;
+            } else if (pCount === 3) {
+              if (openEnds === 2) {
+                windowScore = 200000;
+                windowThreats = 1;
+              } else if (openEnds === 1) {
+                windowScore = 100000;
+                windowThreats = 0.5;
+              } else {
+                windowScore = 50000; // Bounded tight 3
+              }
+            } else if (pCount === 2) {
+              windowScore = openEnds === 2 ? 40000 : 5000;
+            } else if (pCount === 1) {
+              windowScore = 500;
+            }
+
+            if (windowScore > dirScore) {
+              dirScore = windowScore;
+              dirThreats = windowThreats;
+            }
           }
         }
 
@@ -2522,7 +2522,7 @@ export default function App() {
 
           if (maxPieces >= 3) linesFormed++;
           if (maxPieces >= 4) totalET += 1;
-          if (maxPieces === 5) totalET += 1; // 4 gives 1, 5 gives 2
+          if (maxPieces === 5) totalET += 1;
         }
       });
 
