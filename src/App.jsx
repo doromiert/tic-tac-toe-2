@@ -76,6 +76,7 @@ export default function App() {
     draws: 0,
   });
   const [randomTip, setRandomTip] = useState("");
+  const [globalMood, setGlobalMood] = useState("neutral"); // 'neutral', 'victory', 'defeat'
   const [minimapToggle, setMinimapToggle] = useState(true);
   const [miniMapGridSize, setMiniMapGridSize] = useState(10);
   const [savedCampaigns, setSavedCampaigns] = useState([]);
@@ -2883,6 +2884,30 @@ export default function App() {
     };
 
     uiSyncIntervalId.current = setInterval(() => {
+      const recentGames = gamesRef.current;
+      const winCount = recentGames.filter((g) => g.status === "won").length;
+      const lossCount = recentGames.filter((g) => g.status === "lost").length;
+
+      const totalGames = winCount + lossCount;
+      const winRate = totalGames > 0 ? winCount / totalGames : 0;
+
+      let primary, secondary;
+
+      if (winRate > 0.15) {
+        // TRIUMPH: Bot is actually winning some games (Cyan/Emerald)
+        primary = "rgba(6, 182, 212, 0.35)"; // Cyan
+        secondary = "rgba(16, 185, 129, 0.25)"; // Emerald
+      } else if (winRate > 0.05) {
+        // STABLE: Learning, but not winning much (Indigo/Fuchsia)
+        primary = "rgba(99, 102, 241, 0.3)"; // Indigo
+        secondary = "rgba(192, 38, 211, 0.2)"; // Fuchsia
+      } else {
+        // STRUGGLE: 0-5% Win Rate - The "Corner Cuck" Zone (Rose/Amber)
+        primary = "rgba(244, 63, 94, 0.4)"; // Rose
+        secondary = "rgba(251, 146, 60, 0.25)"; // Amber
+      }
+
+      setGlobalMood({ primary, secondary });
       if (isTraining.current) {
         const mem = tf.memory();
         setVramUsage({
@@ -3106,7 +3131,19 @@ export default function App() {
 
   if (appMode === "neural_training") {
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-200 flex flex-col p-4">
+      <div
+        className="min-h-screen text-slate-200 flex flex-col p-4"
+        style={{
+          backgroundColor: "#020617",
+          // Force a re-render check by explicitly checking the boolean
+          backgroundImage:
+            minimapToggle === false
+              ? `radial-gradient(circle at 50% 50%, ${globalMood.primary}, transparent 70%)`
+              : "none",
+          transition:
+            "background-image 1s ease-in-out, background-color 1s ease-in-out",
+        }}
+      >
         {/* HEADER */}
         <div className="flex justify-between items-center border-b border-slate-800 pb-4 mb-4">
           <div>
@@ -3133,7 +3170,7 @@ export default function App() {
             <div className="flex flex-col gap-1 w-32">
               <div className="flex justify-between text-[8px] font-bold text-slate-500 uppercase">
                 <span>VRAM</span>
-                <span className="text-cyan-400">
+                <span className="text-cyan-400 min-w-[65px] text-right">
                   {(vramUsage.bytes / 1024 / 1024).toFixed(1)}MB
                 </span>
               </div>
@@ -3301,31 +3338,27 @@ export default function App() {
           </div>
         )}
         {!minimapToggle && (
-          <div className="flex-1 flex flex-col items-center justify-center relative overflow-hidden bg-slate-950 rounded-2xl border border-white/10 shadow-2xl">
+          <div className="flex-1 flex flex-col items-center justify-center relative overflow-hidden  rounded-2xl border border-white/10 shadow-2xl">
             {/* THE FLUID BLOBS - FULL CANVAS ROAMING */}
             <div className="absolute inset-0 overflow-hidden pointer-events-none">
-              {/* Cyan: The "Lead" - High momentum, wide sweeps */}
+              {/* Primary Blob - Reacts to "Victory" sentiment */}
               <div
-                className="absolute top-1/2 left-1/2 w-[70%] h-[70%] -translate-x-1/2 -translate-y-1/2 rounded-full bg-cyan-500/20 blur-[120px] mix-blend-screen"
+                className="absolute top-1/2 left-1/2 w-[80%] h-[80%] -translate-x-1/2 -translate-y-1/2 rounded-full blur-[140px] mix-blend-screen transition duration-1000"
                 style={{
+                  backgroundColor: globalMood.primary,
                   animation:
                     "fluid-heavy 22s cubic-bezier(0.45, 0, 0.55, 1) infinite",
                 }}
               />
 
-              {/* Fuchsia: The "Chaser" - Follows with a delay and different arc */}
+              {/* Secondary Blob - Reacts to "Struggle" sentiment */}
               <div
-                className="absolute top-1/2 left-1/2 w-[80%] h-[80%] -translate-x-1/2 -translate-y-1/2 rounded-full bg-fuchsia-600/20 blur-[140px] mix-blend-screen"
+                className="absolute top-1/2 left-1/2 w-[90%] h-[90%] -translate-x-1/2 -translate-y-1/2 rounded-full blur-[160px] mix-blend-screen transition duration-1000"
                 style={{
+                  backgroundColor: globalMood.secondary,
                   animation:
                     "fluid-bounce 28s cubic-bezier(0.37, 0, 0.63, 1) infinite",
                 }}
-              />
-
-              {/* Indigo: The "Deep" - Slow, massive rotation across the whole floor */}
-              <div
-                className="absolute top-1/2 left-1/2 w-[90%] h-[90%] -translate-x-1/2 -translate-y-1/2 rounded-full bg-indigo-500/15 blur-[110px]"
-                style={{ animation: "fluid-drift 35s ease-in-out infinite" }}
               />
             </div>
 
@@ -3362,7 +3395,7 @@ export default function App() {
 `}</style>
 
             {/* FROSTED GLASS OVERLAY (The "Mica" effect) */}
-            <div className="absolute inset-0 backdrop-blur-[60px] bg-slate-950/40" />
+            <div className="absolute inset-0 backdrop-blur-[60px] bg-slate-950/10" />
 
             {/* DATA TEXT OVERLAY */}
             <div
@@ -3370,7 +3403,7 @@ export default function App() {
               style={{ width: "90vw" }}
             >
               <div className="mb-4 space-y-2" style={{ width: "90vw" }}>
-                <h3 className="text-white/40  text-2xl tracking-[2px] uppercase">
+                <h3 className="text-white/40  text-3xl tracking-[5px] uppercase">
                   Learning...
                 </h3>
                 <div className="h-[1px] w-24 bg-gradient-to-r  from-transparent via-white/20 to-transparent mx-auto" />
