@@ -385,7 +385,22 @@ export default function App() {
   const GAMMA = 0.9; // Discount factor for future rewards
 
   // Initialize or Reset the Neural Network
-  const initializeModel = () => {
+  const initializeModel = async () => {
+    // 1. FORCE THE GPU BACKEND
+    try {
+      // Try WebGPU first (massively faster for parallel workloads on modern GPUs)
+      await tf.setBackend("webgpu");
+    } catch (e) {
+      console.warn("WebGPU not supported, falling back to WebGL...");
+      // Fallback to WebGL if WebGPU isn't enabled in the browser
+      await tf.setBackend("webgl");
+    }
+    await tf.ready(); // Wait for the backend to initialize
+
+    console.log(
+      `🧠 Neural Net Initialized. Powered by: ${tf.getBackend().toUpperCase()}`,
+    );
+
     const model = tf.sequential();
     // Input: Flat array of the board (cols * rows)
     model.add(
@@ -405,7 +420,6 @@ export default function App() {
       loss: "meanSquaredError",
     });
     modelRef.current = model;
-    console.log("Neural Net Initialized.");
   };
 
   // Converts 2D board array to flat 1D tensor representation
@@ -2563,17 +2577,26 @@ export default function App() {
       return;
     }
 
-    if (!modelRef.current) initializeModel();
-    isTraining.current = true;
+    // Wrap the startup sequence in an async IIFE
+    const startTraining = async () => {
+      if (!modelRef.current) {
+        await initializeModel(); // Wait for GPU to wake up
+      }
+      isTraining.current = true;
 
-    // Populate initial gamesRef
-    gamesRef.current = Array.from({ length: parallelCount }, () => ({
-      board: createEmptyBoard(cols, rows),
-      turn: "X",
-      status: "active",
-      moves: 0,
-      memory: [], // Local memory for this specific game
-    }));
+      // Populate initial gamesRef
+      gamesRef.current = Array.from({ length: parallelCount }, () => ({
+        board: createEmptyBoard(cols, rows),
+        turn: "X",
+        status: "active",
+        moves: 0,
+        memory: [],
+        lastScore: 0,
+      }));
+
+      // Start engine
+      runSimulationStep();
+    };
 
     // --- FAST MATH LOOP ---
     const runSimulationStep = async () => {
@@ -2761,25 +2784,38 @@ export default function App() {
       trainingLoopId.current = requestAnimationFrame(runSimulationStep);
     };
 
-    // --- SLOW UI SYNC LOOP ---
-    // Update the React state at ~15 FPS to prevent UI locking
     uiSyncIntervalId.current = setInterval(() => {
       if (isTraining.current) {
-        setTrainingBoards([...gamesRef.current]);
-        setTrainingStats({ ...statsRef.current }); // Sync the scoreboard!
+        const updatedBoards = gamesRef.current.map((g, idx) => {
+          const heatmap = idx < 8 ? getBoardHeatmap(g.board) : null;
+          return { ...g, heatmap };
+        });
+        setTrainingBoards(updatedBoards);
+        setTrainingStats({ ...statsRef.current });
       }
     }, 1000 / 15);
 
-    // Start engine
-    runSimulationStep();
+    startTraining(); // Fire it up
 
-    // Cleanup
     return () => {
       isTraining.current = false;
       cancelAnimationFrame(trainingLoopId.current);
       clearInterval(uiSyncIntervalId.current);
     };
   }, [appMode, parallelCount, cols, rows]);
+
+  const getBoardHeatmap = (boardState) => {
+    return tf.tidy(() => {
+      if (!modelRef.current) return null;
+      const stateTensor = getBoardTensor(boardState, "X");
+      const qValues = modelRef.current.predict(stateTensor).dataSync();
+
+      // Normalize values between 0 and 1 for CSS opacity/color
+      const min = Math.min(...qValues);
+      const max = Math.max(...qValues);
+      return Array.from(qValues).map((v) => (v - min) / (max - min || 1));
+    });
+  };
 
   // --- RENDERERS ---
   if (appMode === "title") {
@@ -2993,7 +3029,7 @@ export default function App() {
         </div>
 
         {/* MATRIX GRID */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
+        <div className="grid grid-cols-5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
           {trainingBoards.map((game, index) => (
             <div
               key={index}
@@ -3016,17 +3052,28 @@ export default function App() {
                   row.map((cell, x) => (
                     <div
                       key={`${x}-${y}`}
-                      className="bg-slate-950 flex items-center justify-center p-[1px]"
+                      className="bg-slate-950 flex items-center justify-center p-[1px] relative"
                     >
+                      {/* THE HEATMAP LAYER */}
+                      {game.heatmap && (
+                        <div
+                          className="absolute inset-0 z-0 opacity-40"
+                          style={{
+                            backgroundColor: `rgb(${255 * (1 - game.heatmap[y * cols + x])}, ${255 * game.heatmap[y * cols + x]}, 0)`,
+                            boxShadow:
+                              game.heatmap[y * cols + x] > 0.8
+                                ? "inset 0 0 4px #fff"
+                                : "none",
+                          }}
+                        />
+                      )}
+
                       {cell.piece && (
                         <img
                           src={`/icons/${cell.piece}.svg`}
                           alt={cell.piece}
-                          className="w-full h-full object-contain opacity-90 drop-shadow-sm"
-                          style={{
-                            maxWidth: "48px",
-                            maxHeight: "48px",
-                          }}
+                          style={{ height: "80%", width: "80%" }}
+                          className="w-full h-full object-contain z-10 drop-shadow-sm"
                         />
                       )}
                     </div>
