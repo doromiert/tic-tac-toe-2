@@ -248,7 +248,44 @@ export default function App() {
     await pc.setLocalDescription(answer);
   };
 
-  // --- NATIVE WEBRTC LOGIC ---
+  // FAST VERSION: No arrays, no objects, just fast integer math
+  const getFastLineScore = (board, startX, startY, pieceType) => {
+    let score = 0;
+
+    // Check Horizontal
+    let countX = 1;
+    for (
+      let x = startX + 1;
+      x < cols && board[startY][x].piece === pieceType;
+      x++
+    )
+      countX++;
+    for (
+      let x = startX - 1;
+      x >= 0 && board[startY][x].piece === pieceType;
+      x--
+    )
+      countX++;
+    if (countX >= 3) score += countX; // Or whatever your combo math is
+
+    // Check Vertical
+    let countY = 1;
+    for (
+      let y = startY + 1;
+      y < rows && board[y][startX].piece === pieceType;
+      y++
+    )
+      countY++;
+    for (
+      let y = startY - 1;
+      y >= 0 && board[y][startX].piece === pieceType;
+      y--
+    )
+      countY++;
+    if (countY >= 3) score += countY;
+
+    return score;
+  };
   const setupDataChannel = (dc) => {
     dcRef.current = dc;
 
@@ -496,20 +533,30 @@ export default function App() {
     // 2. Exploit: Ask the Neural Net
     return tf.tidy(() => {
       const stateTensor = getBoardTensor(boardState, "X");
-      const qValues = modelRef.current.predict(stateTensor).dataSync(); // Array of size cols*rows
+      const prediction = modelRef.current.predict(stateTensor); // This stays on GPU
 
-      let bestMove = null;
-      let highestQ = -Infinity;
-
-      // Mask invalid moves: Only look at the Q-values of valid x,y coordinates
-      validMoves.forEach((move) => {
-        const flatIndex = move.y * cols + move.x;
-        if (qValues[flatIndex] > highestQ) {
-          highestQ = qValues[flatIndex];
-          bestMove = move;
-        }
+      // 1. Create a mask of valid moves (Size of the board)
+      // We do this on the GPU so we don't have to download the raw Q-values
+      const maskValues = new Float32Array(cols * rows).fill(-1e9); // Very low value
+      validMoves.forEach((m) => {
+        maskValues[m.y * cols + m.x] = 0;
       });
-      return bestMove;
+      const maskTensor = tf.tensor1d(maskValues);
+
+      // 2. Add the mask to the predictions (Invalid moves become -Infinity)
+      const maskedPredictions = prediction.as1D().add(maskTensor);
+
+      // 3. Find the index of the highest Q-value on the GPU
+      const bestActionTensor = maskedPredictions.argMax();
+
+      // 4. ONLY download the final answer (a single integer)
+      const bestIndex = bestActionTensor.dataSync()[0];
+
+      // Map the flat index back to {x, y}
+      return {
+        x: bestIndex % cols,
+        y: Math.floor(bestIndex / cols),
+      };
     });
   };
 
@@ -671,7 +718,7 @@ export default function App() {
   useEffect(() => {
     if (movesMade === 0 || gameOver) return;
 
-    let nextBoard = JSON.parse(JSON.stringify(board));
+    let nextBoard = board.map((r) => r.map((c) => ({ ...c })));
     let boardChanged = false;
 
     // 1. Zone Control: Reset targets every 5 rounds (10 moves)
@@ -1498,7 +1545,7 @@ export default function App() {
     rows,
     gameMode,
   ) => {
-    let b = JSON.parse(JSON.stringify(currentBoard));
+    let b = currentBoard.map((r) => r.map((c) => ({ ...c })));
     let allTrails = [];
 
     let q = [
@@ -1567,7 +1614,7 @@ export default function App() {
 
     let matchOver = false;
     let wMsg = "";
-    let b = JSON.parse(JSON.stringify(board));
+    let b = board.map((r) => r.map((c) => ({ ...c })));
     let totalLinesToErase = new Set();
 
     let q = [{ x: startX, y: startY, piece: currentPlayer, overwrite: false }];
@@ -2254,7 +2301,7 @@ export default function App() {
     currentScores,
   ) => {
     // Deep clone the board so we don't accidentally mutate the previous frame
-    let b = JSON.parse(JSON.stringify(currentBoard));
+    let b = currentBoard.map((r) => r.map((c) => ({ ...c })));
 
     // Ensure scores are perfectly initialized to prevent NaN errors
     let tempScores = { X: 0, O: 0, T: 0, S: 0, ...currentScores };
@@ -2512,7 +2559,7 @@ export default function App() {
     console.log(gameMode);
     setCols(levelData.cols || levelData.gridSize || 9);
     setRows(levelData.rows || levelData.gridSize || 9);
-    setBoard(JSON.parse(JSON.stringify(levelData.board)));
+    setBoard(levelData.board.map((row) => row.map((cell) => ({ ...cell }))));
     setCurrentGoals(
       levelData.goals ||
         (levelData.goal ? [levelData.goal] : [{ type: "standard", target: 0 }]),
@@ -2625,6 +2672,7 @@ export default function App() {
     scores: { X: 0, O: 0, T: 0, S: 0 },
   };
   const isCurrentlyFitting = useRef(false);
+
   useEffect(() => {
     if (appMode !== "neural_training") {
       isTraining.current = false;
@@ -2654,38 +2702,63 @@ export default function App() {
       runSimulationStep();
     };
 
+    // --- HELPER: ZERO-ALLOCATION RESET ---
+    // Put this right above runSimulationStep
+    const resetGameInPlace = (game) => {
+      // 1. Wipe the board mutably (No new arrays created!)
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+          game.board[y][x].piece = null;
+          game.board[y][x].dead = false;
+          // (If your createEmptyBoard sets other defaults like type: 'normal', reset them here too)
+        }
+      }
+
+      // 2. Reset Primitives
+      game.turn = "X";
+      game.status = "active";
+      game.moves = 0;
+      game.lastScore = 0;
+
+      // 3. Keep the scores object, just zero it
+      if (!game.scores) game.scores = { X: 0, O: 0, T: 0, S: 0 };
+      else {
+        game.scores.X = 0;
+        game.scores.O = 0;
+        game.scores.T = 0;
+        game.scores.S = 0;
+      }
+
+      // 4. Empty the memory array WITHOUT destroying it
+      game.memory.length = 0;
+    };
+
     // --- FAST MATH LOOP ---
     const runSimulationStep = async () => {
       if (!isTraining.current) return;
 
       for (let i = 0; i < parallelCount; i++) {
         let game = gamesRef.current[i];
+
         if (game.status !== "active") {
           // --- ADAPTIVE EPSILON LOGIC ---
           if (game.status === "won") {
-            if (game.status === "won") {
-              const currentWinRate =
-                statsRef.current.wins /
-                (statsRef.current.wins + statsRef.current.losses);
-
-              if (currentWinRate < 0.05) {
-                // Only flash if it's a "rare" victory
-                setIsFlashing(true);
-                setTimeout(() => setIsFlashing(false), 1000); // 1s flash
-              }
+            const currentWinRate =
+              statsRef.current.wins /
+              (statsRef.current.wins + statsRef.current.losses);
+            if (currentWinRate < 0.05) {
+              setIsFlashing(true);
+              setTimeout(() => setIsFlashing(false), 1000);
             }
-            // Wins drop epsilon aggressively to exploit the success
             epsilonRef.current = Math.max(
               MIN_EPSILON,
               epsilonRef.current * 0.9,
             );
             statsRef.current.wins++;
           } else if (game.status === "lost") {
-            // Losses increase epsilon, but we'll cap it at 0.4 so it's not COMPLETELY random
             epsilonRef.current = Math.min(0.4, epsilonRef.current + 0.02);
             statsRef.current.losses++;
           } else if (game.status === "draw") {
-            // Draws keep epsilon stable to refine the current tie-state
             epsilonRef.current = Math.max(
               MIN_EPSILON,
               epsilonRef.current * 0.99,
@@ -2693,45 +2766,40 @@ export default function App() {
             statsRef.current.draws++;
           }
 
-          // Train and Reset as usual...
-          if (game.status !== "active") {
-            // Add to buffer
-            globalReplayBuffer.current.push(...game.memory);
-            if (globalReplayBuffer.current.length > maxMemoryEntries) {
-              // Remove the oldest memories to stay under the user's RAM cap
-              const overflow =
-                globalReplayBuffer.current.length - maxMemoryEntries;
-              globalReplayBuffer.current.splice(0, overflow);
-            }
-
-            // Reset game state immediately
-            gamesRef.current[i] = JSON.parse(JSON.stringify(resetState));
-
-            // ONLY train if we aren't already training
-            if (!isCurrentlyFitting.current) {
-              isCurrentlyFitting.current = true;
-
-              // Schedule training for the "next" available moment
-              setTimeout(async () => {
-                const batch = sampleBatch(globalReplayBuffer.current, 128);
-                await trainOnMemoryBatch(batch);
-                isCurrentlyFitting.current = false;
-              }, 10); // 10ms delay is enough for the GPU to finish a frame
-            }
+          // DUMP MEMORY TO GLOBAL BUFFER
+          // We use a manual loop instead of ...spread to avoid Call Stack explosion & allocation
+          for (let m = 0; m < game.memory.length; m++) {
+            globalReplayBuffer.current.push(game.memory[m]);
           }
-          setTrainingEpoch((e) => e + 1);
 
-          gamesRef.current[i] = {
-            board: createEmptyBoard(cols, rows),
-            turn: "X",
-            status: "active",
-            moves: 0,
-            memory: [],
-          };
-          continue;
+          // CHOP BUFFER IF IT OVERFLOWS (This is still a slight GC hit, but acceptable for now)
+          if (globalReplayBuffer.current.length > maxMemoryEntries) {
+            globalReplayBuffer.current.splice(
+              0,
+              globalReplayBuffer.current.length - maxMemoryEntries,
+            );
+          }
+
+          // IN-PLACE RESET (Kills the double-reset GC leak!)
+          resetGameInPlace(game);
+
+          // ONLY train if we aren't already training
+          if (!isCurrentlyFitting.current) {
+            isCurrentlyFitting.current = true;
+            setTimeout(async () => {
+              const batch = sampleBatch(globalReplayBuffer.current, 128);
+              await trainOnMemoryBatch(batch);
+              isCurrentlyFitting.current = false;
+            }, 10);
+          }
+
+          setTrainingEpoch((e) => e + 1);
+          continue; // Skip the rest of the loop for this game
         }
 
-        // Get valid moves for this board
+        // --- GAMEPLAY LOGIC ---
+
+        // Get valid moves (Pre-allocate to avoid GC if possible, but keeping it simple here)
         let validMoves = [];
         for (let y = 0; y < rows; y++) {
           for (let x = 0; x < cols; x++) {
@@ -2745,7 +2813,6 @@ export default function App() {
           }
         }
 
-        // Check Draw condition
         if (validMoves.length === 0) {
           game.status = "draw";
           continue;
@@ -2754,10 +2821,11 @@ export default function App() {
         let move;
         if (game.turn === "X") {
           // NEURAL BOT TURN
-          const flatStateBefore = getBoardTensor(game.board, "X").dataSync();
+          const flatStateBefore = tf.tidy(() =>
+            getBoardTensor(game.board, "X").dataSync(),
+          );
           move = getNeuralMove(game.board, validMoves);
 
-          // APPLY PURE TURN
           const simResult = executePureTurn(
             move.x,
             move.y,
@@ -2770,41 +2838,14 @@ export default function App() {
           game.scores = simResult.scores;
 
           // --- BALANCED REWARD ENGINE ---
-          let reward = 0.1; // Small incentive just for making a valid move
-
-          // 1. Scoring Reward: Encourage active play
+          let reward = 0.1;
           const pointsGained = game.scores.X - (game.lastScore || 0);
-          if (pointsGained > 0) {
-            reward += pointsGained * 2.0; // Significant reward for scoring
-          }
-
-          // 2. Combo Reward: Exponentially reward massive chain reactions
-          if (simResult.extraTurns > 0) {
+          if (pointsGained > 0) reward += pointsGained * 2.0;
+          if (simResult.extraTurns > 0)
             reward += Math.pow(simResult.extraTurns, 2) * 3.0;
-            // 1 extra turn = +3, 2 extra turns = +12, 3 extra turns = +27...
-          }
 
           game.lastScore = game.scores.X;
 
-          // 3. Match Outcome: The ultimate signal
-          if (simResult.matchOver) {
-            let enemyMax = Math.max(
-              game.scores.O || 0,
-              game.scores.T || 0,
-              game.scores.S || 0,
-            );
-
-            if (game.scores.X > enemyMax) {
-              game.status = "won";
-              reward += 50.0; // The Holy Grail
-            } else if (game.scores.X < enemyMax) {
-              game.status = "lost";
-              reward -= 30.0; // Punish losing, but less than the win reward
-            } else {
-              game.status = "draw";
-              reward += 5.0; // Draws are better than nothing
-            }
-          }
           if (simResult.matchOver) {
             let enemyMax = Math.max(
               game.scores.O || 0,
@@ -2813,36 +2854,36 @@ export default function App() {
             );
             if (game.scores.X > enemyMax) {
               game.status = "won";
-              reward += 20; // Massive reward for winning
+              reward += 50.0;
             } else if (game.scores.X < enemyMax) {
               game.status = "lost";
-              reward -= 20; // Massive penalty for losing
+              reward -= 30.0;
             } else {
               game.status = "draw";
+              reward += 5.0;
             }
           }
 
-          const flatStateAfter = getBoardTensor(game.board, "X").dataSync();
+          const flatStateAfter = tf.tidy(() =>
+            getBoardTensor(game.board, "X").dataSync(),
+          );
 
-          // Save Memory
+          // SAVE MEMORY (Zero-Conversion)
+          // Removing Array.from() keeps these as Float32Arrays.
+          // TensorFlow loves Float32Arrays. JS Arrays cause massive GC bloat.
           game.memory.push({
-            state: Array.from(flatStateBefore),
+            state: flatStateBefore,
             actionIndex: move.y * cols + move.x,
             reward: reward,
-            nextState: Array.from(flatStateAfter),
+            nextState: flatStateAfter,
             done: game.status !== "active",
           });
 
-          // Handle Extra Turns
           if (simResult.extraTurns > 0) {
-            // Neural bot gets to go again!
             game.moves++;
           } else {
-            // Pass turn to next procedural bot
             const currIdx = trainingPlayers.indexOf(game.turn);
-            const nextTurn =
-              trainingPlayers[(currIdx + 1) % trainingPlayers.length];
-            game.turn = nextTurn;
+            game.turn = trainingPlayers[(currIdx + 1) % trainingPlayers.length];
             game.moves++;
           }
         } else {
@@ -2870,7 +2911,6 @@ export default function App() {
             game.scores = simResult.scores;
 
             if (simResult.matchOver) {
-              // Game ended on Procedural bot's turn
               let enemyMax = Math.max(
                 game.scores.O || 0,
                 game.scores.T || 0,
@@ -2883,21 +2923,17 @@ export default function App() {
 
             if (simResult.extraTurns === 0) {
               const currIdx = trainingPlayers.indexOf(game.turn);
-              const nextTurn =
+              game.turn =
                 trainingPlayers[(currIdx + 1) % trainingPlayers.length];
-              game.turn = nextTurn;
             }
           } else {
-            // If procedural bot returns null (no valid moves or skipped turn), force next turn
             const currIdx = trainingPlayers.indexOf(game.turn);
-            const nextTurn =
-              trainingPlayers[(currIdx + 1) % trainingPlayers.length];
-            game.turn = nextTurn;
+            game.turn = trainingPlayers[(currIdx + 1) % trainingPlayers.length];
           }
         }
       }
 
-      // Schedule next fast loop iteration immediately
+      // Sync via rAF natively
       trainingLoopId.current = requestAnimationFrame(runSimulationStep);
     };
 
@@ -3080,7 +3116,11 @@ export default function App() {
                     setGameMode(d.gameMode || "standard");
                     setCols(d.cols || d.gridSize || 9);
                     setRows(d.rows || d.gridSize || 9);
-                    setBoard(JSON.parse(JSON.stringify(d.board)));
+                    setBoard(
+                      levelData.board.map((row) =>
+                        row.map((cell) => ({ ...cell })),
+                      ),
+                    );
                     setCurrentGoals(
                       d.goals ||
                         (d.goal ? [d.goal] : [{ type: "standard", target: 0 }]),
@@ -3234,12 +3274,14 @@ export default function App() {
             >
               {minimapToggle ? "Hide Maps" : "Show Maps"}
             </button>
-            <input
-              type="number"
-              value={miniMapGridSize}
-              onChange={(e) => setMiniMapGridSize(e.target.value)}
-              className="w-16 bg-slate-800 text-white p-1 rounded border border-slate-700 text-center text-xs"
-            />
+            {minimapToggle && (
+              <input
+                type="number"
+                value={miniMapGridSize}
+                onChange={(e) => setMiniMapGridSize(e.target.value)}
+                className="w-16 bg-slate-800 text-white p-1 rounded border border-slate-700 text-center text-xs"
+              />
+            )}
             <button
               className="px-4 py-2 bg-rose-600/20 text-rose-400 border border-rose-500/50 hover:bg-rose-600/40 rounded font-bold text-xs transition-colors flex items-center gap-2"
               onClick={async () => {
@@ -3475,11 +3517,11 @@ export default function App() {
   
   background: linear-gradient(
     to right, 
-    transparent 40%, 
-    rgba(255, 255, 255, 0) 45%, 
+    transparent 20%, 
+    rgba(255, 255, 255, 0) 40%, 
     rgba(255, 255, 255, 0.9) 50%, 
-    rgba(255, 255, 255, 0) 55%, 
-    transparent 60%
+    rgba(255, 255, 255, 0) 60%, 
+    transparent 80%
   );
   
   background-size: 1000% 100%;
@@ -3676,7 +3718,9 @@ export default function App() {
                     setGameMode(d.gameMode || "standard");
                     setCols(d.cols || d.gridSize || 9);
                     setRows(d.rows || d.gridSize || 9);
-                    setBoard(JSON.parse(JSON.stringify(d.board)));
+                    setBoard(
+                      d.board.map((row) => row.map((cell) => ({ ...cell }))),
+                    );
                     setCurrentGoals(
                       d.goals ||
                         (d.goal ? [d.goal] : [{ type: "standard", target: 0 }]),
@@ -3986,8 +4030,8 @@ export default function App() {
           let maxOppThreat = 0;
           let blockedAi = false;
           oppNewMoves.forEach((pos) => {
-            let analysis = checkLinePotential(pos.x, pos.y, opp, board);
-            if (analysis.score > maxOppThreat) maxOppThreat = analysis.score;
+            let analysis = getFastLineScore(pos.x, pos.y, opp, board);
+            if (analysis > maxOppThreat) maxOppThreat = analysis;
             if (
               memory.intendedTargets.some((t) => t.x === pos.x && t.y === pos.y)
             ) {
@@ -4812,7 +4856,7 @@ export default function App() {
                     <button
                       onClick={() => {
                         setBackupState({
-                          board: JSON.parse(JSON.stringify(board)),
+                          board: board.map((r) => r.map((c) => ({ ...c }))),
                           scores: { ...scores },
                           drawnLines: [...drawnLines],
                           extraTurns,
@@ -4834,7 +4878,7 @@ export default function App() {
                     <button
                       onClick={() => {
                         setBackupState({
-                          board: JSON.parse(JSON.stringify(board)),
+                          board: board.map((r) => r.map((c) => ({ ...c }))),
                           scores: { ...scores },
                           drawnLines: [...drawnLines],
                           extraTurns,
