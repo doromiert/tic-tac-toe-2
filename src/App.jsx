@@ -1,4 +1,5 @@
 import "./index.css";
+import { motion, AnimatePresence } from "framer-motion";
 import * as tf from "@tensorflow/tfjs";
 import React, { useState, useEffect, useRef } from "react";
 import { initializeApp } from "firebase/app";
@@ -74,6 +75,7 @@ export default function App() {
     losses: 0,
     draws: 0,
   });
+  const [randomTip, setRandomTip] = useState("");
   const [minimapToggle, setMinimapToggle] = useState(true);
   const [miniMapGridSize, setMiniMapGridSize] = useState(10);
   const [savedCampaigns, setSavedCampaigns] = useState([]);
@@ -88,6 +90,41 @@ export default function App() {
   const [lobbyCode, setLobbyCode] = useState("");
   const [joinCodeInput, setJoinCodeInput] = useState("");
   const [connectionStatus, setConnectionStatus] = useState("disconnected"); // 'disconnected', 'connecting', 'connected'
+
+  const tips = [
+    "The neural bot learns by playing procedural bots, refining its strategy.",
+    "Curiosity (epsilon) starts high and drops as the bot gets smarter.",
+    "Parallel simulations accelerate learning through massive data variety.",
+    "Heatmaps show exactly what the bot is 'thinking' about each tile.",
+    "Models can be saved and resumed later for multi-day training.",
+    "Tic Tac Toe 2 was designed in 2022 when doromiert was bored at school.",
+  ];
+
+  // Inside your component
+  const [tipIndex, setTipIndex] = useState(0);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setTipIndex((prev) => (prev + 1) % tips.length);
+    }, 20000); // 20 seconds
+    return () => clearInterval(interval);
+  }, []);
+  setTimeout(() => {
+    const tips = [
+      "The neural bot learns by playing procedural bots, refining its strategy over time.",
+      "The 'curiosity' value (epsilon) starts high to encourage exploration and gradually decreases as the bot learns.",
+      "Parallel simulations allow the bot to experience a wide variety of game states, accelerating learning.",
+      "The heatmaps show which moves the neural bot considers most valuable in each state.",
+      "Training can be stopped at any time, and the current model can be saved for later use or further training.",
+      "Tic Tac Toe 2 was actually designed in 2022 when doromiert (the lead developer) was bored at school.",
+      "Tailwind is actually the devil but i only used it for this project because AIs have more training data with it.",
+      "The multiplayer mode uses Firebase Firestore as a signaling server to establish peer-to-peer WebRTC connections between players.",
+      "You can have up to four players (Cross, Circle, Triangle & Square) in the game, and the neural bot is always 'X' when training.",
+      "Procedural bots collect data on how you play and build a personalized strategy that the neural bot learns from, making it adapt to your playstyle over time.",
+    ];
+    const randomTip = tips[Math.floor(Math.random() * tips.length)];
+    setRandomTip(randomTip);
+  }, 50000);
 
   // --- HOST LOGIC ---
   const startMultiplayerHost = async () => {
@@ -3266,7 +3303,10 @@ export default function App() {
             <div className="absolute inset-0 backdrop-blur-[60px] bg-slate-950/40" />
 
             {/* DATA TEXT OVERLAY */}
-            <div className="z-10 flex flex-col items-center text-center">
+            <div
+              className="z-10 flex flex-col items-center text-center"
+              style={{ width: "90vw" }}
+            >
               <div className="mb-4 space-y-2">
                 <h3 className="text-white/40  text-2xl tracking-[2px] uppercase">
                   Learning...
@@ -3305,6 +3345,36 @@ export default function App() {
                         : "0.0"}
                       %
                     </span>
+                  </div>
+                </div>
+                <div
+                  className="z-10 flex flex-col items-center text-center "
+                  style={{ width: "90vw" }}
+                >
+                  {/* Header Section (Matches the top style) */}
+                  <div className="mb-1 mt-2 space-y-2">
+                    <div className="h-[1px] w-24 bg-gradient-to-r mb-4 from-transparent via-white/20 to-transparent mx-auto" />
+                    <h3 className="text-white/40 text-[10px] tracking-[0.6em] uppercase">
+                      Did you know...
+                    </h3>
+                  </div>
+
+                  {/* Animated Tip Container */}
+                  <div className="relative h-16 w-full flex justify-center overflow-hidden">
+                    <AnimatePresence mode="wait">
+                      <motion.div
+                        key={tipIndex}
+                        initial={{ x: 30, opacity: 0 }}
+                        animate={{ x: 0, opacity: 1 }}
+                        exit={{ x: -30, opacity: 0 }}
+                        transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }} // Smooth "Mica" style easing
+                        className="absolute inset-0 flex items-center justify-center px-8"
+                      >
+                        <span className="text-white/60 font-mono text-sm leading-relaxed italic max-w-md">
+                          "{tips[tipIndex]}"
+                        </span>
+                      </motion.div>
+                    </AnimatePresence>
                   </div>
                 </div>
               </div>
