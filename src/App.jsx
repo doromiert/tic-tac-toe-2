@@ -78,6 +78,13 @@ export default function App() {
   const [randomTip, setRandomTip] = useState("");
   const [globalMood, setGlobalMood] = useState("neutral"); // 'neutral', 'victory', 'defeat'
   const [minimapToggle, setMinimapToggle] = useState(true);
+  const [isFlashing, setIsFlashing] = useState(false);
+  useEffect(() => {
+    window.triggerFlash = () => {
+      setIsFlashing(true);
+      setTimeout(() => setIsFlashing(false), 1000);
+    };
+  }, []);
   const [miniMapGridSize, setMiniMapGridSize] = useState(10);
   const [savedCampaigns, setSavedCampaigns] = useState([]);
   const [rotConfig, setRotConfig] = useState({ x: 50, y: 50, mult: 100 });
@@ -2656,6 +2663,17 @@ export default function App() {
         if (game.status !== "active") {
           // --- ADAPTIVE EPSILON LOGIC ---
           if (game.status === "won") {
+            if (game.status === "won") {
+              const currentWinRate =
+                statsRef.current.wins /
+                (statsRef.current.wins + statsRef.current.losses);
+
+              if (currentWinRate < 0.05) {
+                // Only flash if it's a "rare" victory
+                setIsFlashing(true);
+                setTimeout(() => setIsFlashing(false), 1000); // 1s flash
+              }
+            }
             // Wins drop epsilon aggressively to exploit the success
             epsilonRef.current = Math.max(
               MIN_EPSILON,
@@ -2885,29 +2903,36 @@ export default function App() {
 
     uiSyncIntervalId.current = setInterval(() => {
       const recentGames = gamesRef.current;
-      const winCount = recentGames.filter((g) => g.status === "won").length;
-      const lossCount = recentGames.filter((g) => g.status === "lost").length;
 
-      const totalGames = winCount + lossCount;
-      const winRate = totalGames > 0 ? winCount / totalGames : 0;
+      const lerpColor = (rgba1, rgba2, factor) => {
+        const parse = (s) => s.match(/\d+(\.\d+)?/g).map(Number);
+        const [r1, g1, b1, a1] = parse(rgba1);
+        const [r2, g2, b2, a2] = parse(rgba2);
+        const r = Math.round(r1 + (r2 - r1) * factor);
+        const g = Math.round(g1 + (g2 - g1) * factor);
+        const b = Math.round(b1 + (b2 - b1) * factor);
+        const a = a1 + (a2 - a1) * factor;
+        return `rgba(${r}, ${g}, ${b}, ${a})`;
+      };
 
-      let primary, secondary;
+      // Inside your UI Sync Loop (setInterval):
+      const total = trainingStats.wins + trainingStats.losses;
+      const winRate = total > 0 ? trainingStats.wins / total : 0;
 
-      if (winRate > 0.15) {
-        // TRIUMPH: Bot is actually winning some games (Cyan/Emerald)
-        primary = "rgba(6, 182, 212, 0.35)"; // Cyan
-        secondary = "rgba(16, 185, 129, 0.25)"; // Emerald
-      } else if (winRate > 0.05) {
-        // STABLE: Learning, but not winning much (Indigo/Fuchsia)
-        primary = "rgba(99, 102, 241, 0.3)"; // Indigo
-        secondary = "rgba(192, 38, 211, 0.2)"; // Fuchsia
-      } else {
-        // STRUGGLE: 0-5% Win Rate - The "Corner Cuck" Zone (Rose/Amber)
-        primary = "rgba(244, 63, 94, 0.4)"; // Rose
-        secondary = "rgba(251, 146, 60, 0.25)"; // Amber
-      }
+      // Normalize win rate: 0% is pure Rose, 15%+ is pure Cyan
+      const moodFactor = Math.min(winRate / 0.15, 1);
 
-      setGlobalMood({ primary, secondary });
+      const STRUGGLE_COLOR = "rgba(244, 63, 94, 0.3)"; // Rose
+      const SUCCESS_COLOR = "rgba(6, 182, 212, 0.3)"; // Cyan
+
+      setGlobalMood({
+        primary: lerpColor(STRUGGLE_COLOR, SUCCESS_COLOR, moodFactor),
+        secondary: lerpColor(
+          "rgba(251, 146, 60, 0.2)",
+          "rgba(16, 185, 129, 0.2)",
+          moodFactor,
+        ),
+      });
       if (isTraining.current) {
         const mem = tf.memory();
         setVramUsage({
@@ -3403,9 +3428,67 @@ export default function App() {
               style={{ width: "90vw" }}
             >
               <div className="mb-4 space-y-2" style={{ width: "90vw" }}>
-                <h3 className="text-white/40  text-3xl tracking-[5px] uppercase">
-                  Learning...
-                </h3>
+                <div className="relative h-12 w-full flex items-center justify-center">
+                  {/* THE "LEARNING" LAYER */}
+                  <p
+                    className={`
+      absolute text-4xl font-light tracking-tight transition-all duration-700 animate-shimmer-wave
+      ${isFlashing ? "opacity-0 scale-95 blur-md" : "opacity-100 scale-100 blur-0"}
+    `}
+                  >
+                    Learning...
+                  </p>
+
+                  {/* THE "VICTORY" LAYER */}
+                  <p
+                    className={`
+      absolute text-4xl font-bold tracking-tighter transition-all duration-500 text-white
+      ${isFlashing ? "opacity-100 scale-110 blur-0" : "opacity-0 scale-125 blur-xl"}
+    `}
+                    style={{
+                      textShadow:
+                        "0 0 30px rgba(255,255,255,0.8), 0 0 60px rgba(255,255,255,0.4)",
+                    }}
+                  >
+                    VICTORY!
+                  </p>
+                </div>
+                <style>
+                  {`
+  
+@keyframes text-shimmer {
+    0% {
+        background-position: 150% 0;
+        }
+    99% {
+        background-position: -150% 0;
+    }
+    100% {
+        background-position: -150% 0;
+    }
+}
+                
+     
+                
+.animate-shimmer-wave {
+  animation: text-shimmer 5s linear infinite;
+  
+  background: linear-gradient(
+    to right, 
+    transparent 40%, 
+    rgba(255, 255, 255, 0) 45%, 
+    rgba(255, 255, 255, 0.9) 50%, 
+    rgba(255, 255, 255, 0) 55%, 
+    transparent 60%
+  );
+  
+  background-size: 1000% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: rgba(255, 255, 255, 0.4);
+                  }
+`}
+                </style>
                 <div className="h-[1px] w-24 bg-gradient-to-r  from-transparent via-white/20 to-transparent mx-auto" />
               </div>
 
