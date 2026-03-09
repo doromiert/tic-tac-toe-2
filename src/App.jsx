@@ -2749,6 +2749,25 @@ export default function App() {
   const isCurrentlyFitting = useRef(false);
 
   useEffect(() => {
+    // --- FAST RANDOM SAMPLER ---
+    const sampleBatch = (buffer, batchSize) => {
+      const currentSize = buffer.length;
+
+      // If we don't have enough memories yet, just return what we have
+      if (currentSize <= batchSize) {
+        return [...buffer];
+      }
+
+      const batch = new Array(batchSize);
+
+      // Fast random sampling (with replacement for maximum speed)
+      for (let i = 0; i < batchSize; i++) {
+        const randomIndex = Math.floor(Math.random() * currentSize);
+        batch[i] = buffer[randomIndex];
+      }
+
+      return batch;
+    };
     if (appMode !== "neural_training") {
       isTraining.current = false;
       cancelAnimationFrame(trainingLoopId.current);
