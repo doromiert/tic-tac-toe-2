@@ -2605,17 +2605,29 @@ export default function App() {
       for (let i = 0; i < parallelCount; i++) {
         let game = gamesRef.current[i];
         if (game.status !== "active") {
-          if (game.status === "won") statsRef.current.wins++;
-          else if (game.status === "lost") statsRef.current.losses++;
-          else if (game.status === "draw") statsRef.current.draws++;
+          // --- ADAPTIVE EPSILON LOGIC ---
+          if (game.status === "won") {
+            // Win: Become more confident/stubborn (Lower Epsilon)
+            // We drop it by a percentage to "lock in" the winning strategy
+            epsilonRef.current = Math.max(
+              MIN_EPSILON,
+              epsilonRef.current * 0.98,
+            );
+            statsRef.current.wins++;
+          } else if (game.status === "lost") {
+            // Loss: Increase curiosity/frustration (Raise Epsilon)
+            // We add a flat "bump" to force it to look at new tiles
+            epsilonRef.current = Math.min(0.5, epsilonRef.current + 0.05);
+            statsRef.current.losses++;
+          } else if (game.status === "draw") {
+            // Draw: Slight nudge toward exploration, but less than a loss
+            epsilonRef.current = Math.min(0.5, epsilonRef.current + 0.01);
+            statsRef.current.draws++;
+          }
 
+          // Train and Reset as usual...
           await trainOnMemoryBatch(game.memory);
-          epsilonRef.current = Math.max(
-            MIN_EPSILON,
-            epsilonRef.current * EPSILON_DECAY,
-          );
-
-          setTrainingEpoch((e) => e + 1); // Bump epoch counter for UI
+          setTrainingEpoch((e) => e + 1);
 
           gamesRef.current[i] = {
             board: createEmptyBoard(cols, rows),
@@ -3029,7 +3041,7 @@ export default function App() {
         </div>
 
         {/* MATRIX GRID */}
-        <div className="grid grid-cols-5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
+        <div className="grid grid-cols-10 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
           {trainingBoards.map((game, index) => (
             <div
               key={index}
