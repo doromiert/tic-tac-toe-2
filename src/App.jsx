@@ -109,6 +109,29 @@ export default function App() {
   const [vramUsage, setVramUsage] = useState({ bytes: 0, tensors: 0 });
 
   const tips = [
+    "The AI isn't 'randomly' clicking; it's just 'exploring the possibility space of failure.'",
+    "If the bot plays in a 2x2 square forever, it's not a bug, it's an avant-garde protest against your reward function.",
+    "Epsilon is currently higher than my will to live on a Monday morning.",
+    "Warning: The bot has discovered that the best way to not lose is to crash the browser. Working on a fix.",
+    "Your GPU is currently pondering the philosophical implications of a 5-in-a-row.",
+    "The 'EMA' logic means the bot has a memory of about 20 games. Just like a goldfish, but with more linear algebra.",
+    "If the bot starts winning, it's sentient. If it starts losing, it's just 'collecting data.'",
+    "This AI is 100% organic, locally sourced, and free-range. No GPUs were harmed in the making of this chaos (except yours).",
+    "The neural network is currently a 'black box.' Mostly because I turned off the lights in my room.",
+    "If you see a 99% win rate, check if you accidentally unplugged the opponent's brain.",
+    "Bellman's Equation: Because why solve a problem now when you can recursively pass the blame to your future self?",
+    "The bot isn't cowering in the corner anymore; it's just 'tactically loitering.'",
+    "Don't trust the loss graph. It lies. Like my ex, but with more floating-point errors.",
+    "The center is no longer lava. It is now a high-stakes zone of financial and emotional investment.",
+    "If the browser tabs start closing themselves, the AI has reached 'peak optimization.'",
+    "JavaScript: The only language where `[] + []` is an empty string but `{} + []` is 0. And we're using it for AI. God help us.",
+    "The bot's 'mood' is currently set to: 'Existential Dread.'",
+    "Why use a Supercomputer when you can just melt a random person's Chrome tab?",
+    "The AI just asked for your credit card info to 'optimize the weights.' Do not provide it.",
+    "Error 404: Bot's ambition not found. Reverting to 'Spin around in circles' mode.",
+    "42",
+    "Are we going to just ignore the fact the loss function went into the billions?",
+    "Browse e621.net, it's great for you!",
     "Buna ziua frate!",
     "Buna dimineața oamenii buni",
     "2137",
@@ -560,10 +583,11 @@ export default function App() {
   }, []);
 
   // RL Hyperparameters
-  const epsilonRef = useRef(1.0); // Exploration rate (starts at 100% random)
-  const EPSILON_DECAY = 0.995;
+  // Existing refs
+  const epsilonRef = useRef(1.0);
   const MIN_EPSILON = 0.05;
-  const GAMMA = 0.9; // Discount factor for future rewards
+
+  const recentWinRateRef = useRef(0.0);
 
   // Initialize or Reset the Neural Network
   const initializeModel = async () => {
@@ -696,9 +720,8 @@ export default function App() {
 
     const batchSize = batch.length;
 
-    // 1. ALLOCATE ONE CONTIGUOUS BLOCK OF MEMORY (Zero GC overhead)
+    // 1. ALLOCATE ONE CONTIGUOUS BLOCK OF MEMORY
     const stateData = new Float32Array(batchSize * 81);
-    const nextStateData = new Float32Array(batchSize * 81);
     const targets = new Float32Array(batchSize);
 
     // 2. RAW MEMORY COPY
@@ -706,52 +729,29 @@ export default function App() {
       const memoryItem = batch[i];
       const offset = i * 81;
       stateData.set(memoryItem.state, offset);
-      nextStateData.set(memoryItem.nextState, offset);
+
+      //  THE FIX: Rely strictly on the shaped immediate reward.
+      // We drop the Bellman lookahead (nextQs) because evaluating
+      // patchAfter forces the AI to evaluate an illegal/occupied square,
+      // which was poisoning the Q-values with massive negative numbers.
+      targets[i] = memoryItem.reward;
     }
 
     // 3. SEND RAW MEMORY DIRECTLY TO GPU
     const xTensor = tf.tensor2d(stateData, [batchSize, 81]);
-    const nextXTensor = tf.tensor2d(nextStateData, [batchSize, 81]);
-
-    // 4. ASYNC BELLMAN PREDICTION (No tf.tidy!)
-    const nextQPredictions = modelRef.current.predict(nextXTensor);
-
-    // 🔥 THE MAGIC FLUIDITY FIX 🔥
-    // .data() lets the CPU continue rendering your UI while the GPU thinks!
-    const nextQs = await nextQPredictions.data();
-    nextQPredictions.dispose(); // Manually clean up the prediction tensor
-
-    // Calculate Bellman targets in standard JS
-    for (let i = 0; i < batchSize; i++) {
-      let targetQ = batch[i].reward;
-      if (!batch[i].done) {
-        targetQ += 0.95 * nextQs[i]; // 0.95 Gamma
-      }
-      targets[i] = targetQ;
-    }
-
     const yTensor = tf.tensor2d(targets, [batchSize, 1]);
 
-    // 5. TRAIN THE BRAIN (Low-Level API, Zero Callback Overhead)
-    const lossTensor = await modelRef.current.trainOnBatch(xTensor, yTensor);
-
-    // 6. ASYNC LOSS DOWNLOAD
-    // 5. TRAIN THE BRAIN (Low-Level API)
-    // trainOnBatch returns the numerical loss directly!
+    // 4. TRAIN ONCE (Removed the double-train bug!)
     const lossResult = await modelRef.current.trainOnBatch(xTensor, yTensor);
 
-    // 6. EXTRACT THE LOSS
-    // If you have metrics attached, TFJS returns an array [loss, metric1].
-    // If not, it just returns the number. We handle both just in case:
+    // 5. EXTRACT THE LOSS
     const loss = Array.isArray(lossResult) ? lossResult[0] : lossResult;
 
-    // 7. HARD VRAM CLEANUP
+    // 6. HARD VRAM CLEANUP
     xTensor.dispose();
-    nextXTensor.dispose();
     yTensor.dispose();
-    // (Notice we don't dispose the loss anymore, because it's just a JS number!)
 
-    // 8. UPDATE UI
+    // 7. UPDATE UI
     setLatestLoss(loss);
     setLossHistory((prev) => {
       const updated = [...prev, loss];
@@ -2794,7 +2794,6 @@ export default function App() {
           if (!cell.piece || !cell.dead) continue;
 
           dirs.forEach(([dx, dy]) => {
-            // Only trace if this is the start of a sequence
             let px = x - dx,
               py = y - dy;
             if (px >= 0 && px < cols && py >= 0 && py < rows) {
@@ -2829,6 +2828,7 @@ export default function App() {
       }
       return lines;
     };
+
     // --- FAST RANDOM SAMPLER ---
     const sampleBatch = (buffer, batchSize) => {
       const currentSize = buffer.length;
@@ -2851,6 +2851,15 @@ export default function App() {
     const startTraining = async () => {
       if (!modelRef.current) await initializeModel();
       isTraining.current = true;
+
+      // Initialize the dynamic EMA tracker safely
+      if (statsRef.current.recentWinRate === undefined) {
+        statsRef.current.recentWinRate = 0.0;
+      }
+      game.lastScoreX = 0;
+      game.lastScoreO = 0;
+      game.lastScoreT = 0;
+      game.lastScoreS = 0;
 
       gamesRef.current = Array.from({ length: parallelCount }, () => ({
         board: createEmptyBoard(cols, rows),
@@ -2877,7 +2886,7 @@ export default function App() {
       game.status = "active";
       game.moves = 0;
       game.lastScore = 0;
-      game.lines.length = 0; // <-- WIPE LINES ON RESET
+      game.lines.length = 0;
       if (!game.scores) game.scores = { X: 0, O: 0, T: 0, S: 0 };
       else {
         game.scores.X = 0;
@@ -2915,20 +2924,26 @@ export default function App() {
           }
           currentEpochRef.current += 1;
 
+          // ==========================================
+          // 🧠 NEW DYNAMIC EPSILON & EMA LOGIC HERE
+          // ==========================================
+          let gameResultValue = 0.0;
+
           if (game.status === "won") {
-            const currentWinRate =
-              statsRef.current.wins /
-              (statsRef.current.wins + statsRef.current.losses);
-            if (currentWinRate < 0.05) {
+            gameResultValue = 1.0;
+            statsRef.current.wins++;
+
+            // Check for flashing alert (only if genuinely stuck)
+            if (statsRef.current.recentWinRate < 0.05) {
               setIsFlashing(true);
               setTimeout(() => setIsFlashing(false), 1000);
             }
             epsilonRef.current = Math.max(
               MIN_EPSILON,
-              epsilonRef.current * 0.9,
+              epsilonRef.current - 0.05,
             );
-            statsRef.current.wins++;
 
+            // Campaign Progression remains unchanged
             const cState = campaignStateRef.current;
             if (cState.isActive) {
               const newWins = cState.wins + 1;
@@ -2958,15 +2973,35 @@ export default function App() {
               }
             }
           } else if (game.status === "lost") {
-            epsilonRef.current = Math.min(0.4, epsilonRef.current + 0.02);
+            gameResultValue = 0.0;
             statsRef.current.losses++;
+            epsilonRef.current = Math.min(0.8, epsilonRef.current + 0.1);
           } else if (game.status === "draw") {
+            // Give draws a tiny positive value so the AI learns drawing is better than losing
+            gameResultValue = 0.2;
+            statsRef.current.draws++;
             epsilonRef.current = Math.max(
               MIN_EPSILON,
-              epsilonRef.current * 0.99,
+              epsilonRef.current - 0.01,
             );
-            statsRef.current.draws++;
           }
+
+          // 1. Update Exponential Moving Average (Focuses on last ~20 games)
+          statsRef.current.recentWinRate =
+            0.05 * gameResultValue + 0.95 * statsRef.current.recentWinRate;
+
+          // 2. The Dynamic Epsilon Curve (Squaring the inverse win rate)
+          let dynamicEpsilon = Math.pow(
+            1.0 - statsRef.current.recentWinRate,
+            2,
+          );
+
+          // Clamp Epsilon between our bounds
+          epsilonRef.current = Math.max(
+            MIN_EPSILON,
+            Math.min(1.0, dynamicEpsilon),
+          );
+          // ==========================================
 
           // Dump memory & Train
           for (let m = 0; m < game.memory.length; m++) {
@@ -3010,7 +3045,6 @@ export default function App() {
         }
 
         if (game.turn === "X") {
-          // Add to GPU queue
           activeNeuralTasks.push({
             game,
             validMoves,
@@ -3071,7 +3105,6 @@ export default function App() {
         const globalContext = new Float32Array(totalNeuralMoves * 81);
         let ptr = 0;
 
-        // Build the giant batch buffer
         for (let t = 0; t < activeNeuralTasks.length; t++) {
           const task = activeNeuralTasks[t];
           const board = task.game.board;
@@ -3095,7 +3128,6 @@ export default function App() {
           }
         }
 
-        // The single GPU sync for the entire frame
         let globalScores;
         tf.tidy(() => {
           const inputTensor = tf.tensor2d(globalContext, [
@@ -3105,7 +3137,6 @@ export default function App() {
           globalScores = modelRef.current.predict(inputTensor).dataSync();
         });
 
-        // Resolve all tasks
         for (let t = 0; t < activeNeuralTasks.length; t++) {
           const task = activeNeuralTasks[t];
           let bestMove = task.validMoves[0];
@@ -3120,8 +3151,6 @@ export default function App() {
           }
 
           let game = task.game;
-
-          // Capture Pre-State
           const patchBefore = getLocal9x9Context(
             game.board,
             bestMove.x,
@@ -3131,7 +3160,6 @@ export default function App() {
             cols,
           );
 
-          // Execute
           const simResult = executePureTurn(
             bestMove.x,
             bestMove.y,
@@ -3146,10 +3174,43 @@ export default function App() {
             game.lines.push(...simResult.newLines);
           }
 
-          // Reward Math & Goal Evaluation
           let reward = 0.1;
           const pointsGained = game.scores.X - (game.lastScore || 0);
-          if (pointsGained > 0) reward += pointsGained * 2.0;
+
+          if (pointsGained > 0) {
+            reward += pointsGained * 2.0;
+            // --- MICRO-ADJUSTMENT ---
+            // Drop epsilon slightly because we found a "good" move.
+            // This makes the AI "lean in" to successful patterns.
+            // 1. Calculate how many points the Neural AI gained this turn
+            const playerPointsGained = game.scores.X - (game.lastScoreX || 0);
+
+            // 2. Calculate how many points the ENEMIES gained since the last turn
+            // (This requires tracking lastScoreO, lastScoreT, etc.)
+            const enemyPointsGained =
+              game.scores.O -
+              (game.lastScoreO || 0) +
+              (game.scores.T - (game.lastScoreT || 0)) +
+              (game.scores.S - (game.lastScoreS || 0));
+
+            // 3. THE EQUATION:
+            // We weight enemy points slightly higher (1.5x) to cure the "cowardice".
+            // This forces the AI to realize that letting an enemy score is PAINFUL.
+            reward = playerPointsGained * 2.0 - enemyPointsGained * 3.0;
+
+            // 4. Update Epsilon based on the Net Result
+            if (reward > 0) {
+              // We did something good (scored or blocked effectively)
+              epsilonRef.current = Math.max(
+                MIN_EPSILON,
+                epsilonRef.current - 0.01,
+              );
+            } else if (reward < 0) {
+              // We let the enemy score! Panic and explore new blocking positions.
+              epsilonRef.current = Math.min(0.8, epsilonRef.current + 0.05);
+            }
+          }
+
           if (simResult.extraTurns > 0)
             reward += Math.pow(simResult.extraTurns, 2) * 3.0;
 
@@ -3211,7 +3272,6 @@ export default function App() {
         }
       }
 
-      // Loop continues natively
       trainingLoopId.current = requestAnimationFrame(runSimulationStep);
     };
 
@@ -3221,22 +3281,29 @@ export default function App() {
         const parse = (s) => s.match(/\d+(\.\d+)?/g).map(Number);
         const [r1, g1, b1, a1] = parse(rgba1);
         const [r2, g2, b2, a2] = parse(rgba2);
-        return `rgba(${Math.round(r1 + (r2 - r1) * factor)}, ${Math.round(g1 + (g2 - g1) * factor)}, ${Math.round(b1 + (b2 - b1) * factor)}, ${a1 + (a2 - a1) * factor})`;
+        return `rgba(${Math.round(r1 + (r2 - r1) * factor)}, ${Math.round(
+          g1 + (g2 - g1) * factor,
+        )}, ${Math.round(b1 + (b2 - b1) * factor)}, ${a1 + (a2 - a1) * factor})`;
       };
 
-      const total = statsRef.current.wins + statsRef.current.losses;
-      const winRate = total > 0 ? statsRef.current.wins / total : 0;
-      const moodFactor = Math.min(winRate / 0.15, 1);
+      // ==========================================
+      // 🎨 NEW DYNAMIC COLORS USING EMA
+      // ==========================================
+      // Instead of all-time winRate, we use the rolling recentWinRate.
+      // A win rate of 50% (0.5) against a bot is often considered "good"
+      // in early RL, so we multiply by 2.0 to scale the mood factor appropriately.
+      const currentRecentWR = statsRef.current.recentWinRate || 0;
+      const moodFactor = Math.min(Math.max(currentRecentWR * 2.0, 0), 1);
 
       setGlobalMood({
         primary: lerpColor(
-          "rgba(244, 63, 94, 0.3)",
-          "rgba(6, 182, 212, 0.3)",
+          "rgba(244, 63, 94, 0.3)", // Panicked Red
+          "rgba(6, 182, 212, 0.3)", // Confident Cyan
           moodFactor,
         ),
         secondary: lerpColor(
-          "rgba(251, 146, 60, 0.2)",
-          "rgba(16, 185, 129, 0.2)",
+          "rgba(251, 146, 60, 0.2)", // Stressed Orange
+          "rgba(16, 185, 129, 0.2)", // Relaxed Emerald
           moodFactor,
         ),
       });
@@ -3246,24 +3313,22 @@ export default function App() {
         setVramUsage({ bytes: mem.numBytes, tensors: mem.numTensors });
 
         if (minimapToggle) {
-          // Wrap in an async IIFE so we don't block the interval timer
           (async () => {
             const updatedBoards = await Promise.all(
               gamesRef.current.map(async (g, idx) => {
-                // Only spend GPU time rendering the boards the user can actually see
                 const heatmap =
                   idx < 8 ? await getBoardHeatmapAsync(g.board) : null;
                 return { ...g, heatmap };
               }),
             );
 
-            // Only update the state if we didn't cancel training while waiting
             if (isTraining.current) {
               setTrainingBoards(updatedBoards);
             }
           })();
         }
 
+        // Pass the epsilon down so the UI displays the true rolling value
         setTrainingStats({ ...statsRef.current, epsilon: epsilonRef.current });
       }
     }, 1000 / 15);
