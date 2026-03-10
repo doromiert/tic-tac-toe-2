@@ -100,6 +100,7 @@ export default function App() {
   const [pendingRemoteMove, setPendingRemoteMove] = useState(null);
   const [bestGameSnapshot, setBestGameSnapshot] = useState(null);
   const bestScoreRef = useRef(0);
+  const currentEpochRef = useRef(0);
   // --- NEW FIREBASE SIGNALING STATE ---
   const [lobbyCode, setLobbyCode] = useState("");
   const [joinCodeInput, setJoinCodeInput] = useState("");
@@ -2467,14 +2468,12 @@ export default function App() {
     activePlayers,
     currentScores,
   ) => {
-    // 1. MUTATE IN-PLACE (Kills the 54ms .map() deep-clone lag)
     board[startY][startX].piece = player;
 
     let pointsScoredThisTurn = 0;
     let earnedExtraTurns = 0;
+    let newLines = [];
 
-    // 2. THE RADIAL SCAN (Kills the 290ms checkLine & evaluateSeq lag)
-    // We only check the 4 axes crossing the exact piece we just placed.
     const axes = [
       [
         { dx: 1, dy: 0 },
@@ -2487,79 +2486,117 @@ export default function App() {
       [
         { dx: 1, dy: 1 },
         { dx: -1, dy: -1 },
-      ], // Diagonal Down
+      ], // Diagonal Down (\)
       [
         { dx: 1, dy: -1 },
         { dx: -1, dy: 1 },
-      ], // Diagonal Up
+      ], // Diagonal Up (/)
     ];
 
     axes.forEach((axis) => {
-      let lineLength = 1; // The piece we just placed
-      let seq = [{ x: startX, y: startY }];
+      let lineLength = 1;
+      let seq = [{ x: startX, y: startY, cell: board[startY][startX] }];
 
       axis.forEach((dir) => {
-        let cx = startX + dir.dx;
-        let cy = startY + dir.dy;
+        let cx = startX;
+        let cy = startY;
 
-        // Raycast outwards until we hit an empty space, enemy, or wall
-        while (cx >= 0 && cx < cols && cy >= 0 && cy < rows) {
-          let cell = board[cy][cx];
-          // Stop if it's dead, enemy, or void
-          if (
-            cell.dead ||
-            cell.type === "void" ||
-            (!cell.piece && cell.type !== "neutral")
-          )
-            break;
-          if (cell.piece !== player && cell.type !== "neutral") break;
+        while (true) {
+          let nextX = cx + dir.dx;
+          let nextY = cy + dir.dy;
+
+          if (nextX < 0 || nextX >= cols || nextY < 0 || nextY >= rows) break;
+
+          let currentCell = board[cy][cx];
+          let nextCell = board[nextY][nextX];
+
+          // STRICT WALL COLLISIONS (Both Directions)
+          let blocked = false;
+          if (dir.dx === 1 && dir.dy === 0 && currentCell.walls?.r)
+            blocked = true;
+          if (dir.dx === -1 && dir.dy === 0 && nextCell.walls?.r)
+            blocked = true;
+          if (dir.dx === 0 && dir.dy === 1 && currentCell.walls?.b)
+            blocked = true;
+          if (dir.dx === 0 && dir.dy === -1 && nextCell.walls?.b)
+            blocked = true;
+          if (dir.dx === 1 && dir.dy === 1 && board[cy][nextX].walls?.bl)
+            blocked = true;
+          if (dir.dx === -1 && dir.dy === -1 && board[nextY][cx].walls?.bl)
+            blocked = true;
+          if (dir.dx === -1 && dir.dy === 1 && board[cy][nextX].walls?.br)
+            blocked = true;
+          if (dir.dx === 1 && dir.dy === -1 && board[nextY][cx].walls?.br)
+            blocked = true;
+
+          if (blocked) break;
+
+          // VALIDITY CHECK (No dead pieces!)
+          if (nextCell.dead || nextCell.type === "void") break;
+          if (nextCell.piece !== player && nextCell.type !== "neutral") break;
 
           lineLength++;
-          seq.push({ x: cx, y: cy });
-          cx += dir.dx;
-          cy += dir.dy;
+          seq.push({ x: nextX, y: nextY, cell: nextCell });
+          cx = nextX;
+          cy = nextY;
         }
       });
 
       if (lineLength >= 3) {
         pointsScoredThisTurn += 1;
-        let longLineBonus = Math.max(0, lineLength - 3);
-        earnedExtraTurns += longLineBonus;
+        earnedExtraTurns += Math.max(0, lineLength - 3);
 
-        // Mark the pieces as dead so they can't be reused
         seq.forEach((pos) => {
-          if (board[pos.y][pos.x].type !== "neutral") {
-            board[pos.y][pos.x].dead = true;
-          }
+          if (pos.cell.type !== "neutral") pos.cell.dead = true;
+        });
+
+        // Geometrically sort the sequence to get perfect start/end SVG coordinates
+        seq.sort((a, b) => a.x - b.x || a.y - b.y);
+        const colors = {
+          X: "#22d3ee",
+          O: "#fb7185",
+          T: "#34d399",
+          S: "#fbbf24",
+        };
+
+        newLines.push({
+          id: Math.random().toString(36).substring(2, 9),
+          x1: seq[0].x,
+          y1: seq[0].y,
+          x2: seq[seq.length - 1].x,
+          y2: seq[seq.length - 1].y,
+          color: colors[player] || "#22d3ee",
         });
       }
     });
 
-    // Multiline Bonus
-    if (pointsScoredThisTurn > 1) {
-      earnedExtraTurns += pointsScoredThisTurn - 1;
-    }
-
+    if (pointsScoredThisTurn > 1) earnedExtraTurns += pointsScoredThisTurn - 1;
     currentScores[player] += pointsScoredThisTurn;
 
-    // 3. FAST MATCH-OVER CHECK
     let matchOver = true;
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
         let cell = board[r][c];
-        if (!cell.piece && cell.type !== "void" && !cell.mechanicalLock) {
+        if (
+          !["void", "locked_mech", "dup", "neutral", "locked_letter"].includes(
+            cell.type,
+          ) &&
+          !cell.mechanicalLock &&
+          !cell.piece
+        ) {
           matchOver = false;
-          break; // Break inner
+          break;
         }
       }
-      if (!matchOver) break; // Break outer
+      if (!matchOver) break;
     }
 
     return {
-      board: board, // Returned mutated
+      board,
       scores: currentScores,
-      matchOver: matchOver,
+      matchOver,
       extraTurns: earnedExtraTurns,
+      newLines,
     };
   };
 
@@ -2740,6 +2777,58 @@ export default function App() {
     currentGoalsRef.current = currentGoals;
   }, [currentGoals]);
   useEffect(() => {
+    // --- HELPER: REBUILD LINES FOR HOLOGRAM ---
+    const extractWinningLines = (board, cols, rows) => {
+      const lines = [];
+      const dirs = [
+        [1, 0],
+        [0, 1],
+        [1, 1],
+        [1, -1],
+      ];
+      const colors = { X: "#22d3ee", O: "#fb7185", T: "#a855f7", S: "#facc15" };
+
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+          const cell = board[y][x];
+          if (!cell.piece || !cell.dead) continue;
+
+          dirs.forEach(([dx, dy]) => {
+            // Only trace if this is the start of a sequence
+            let px = x - dx,
+              py = y - dy;
+            if (px >= 0 && px < cols && py >= 0 && py < rows) {
+              const pCell = board[py][px];
+              if (pCell.piece === cell.piece && pCell.dead) return;
+            }
+
+            let len = 1;
+            let cx = x + dx,
+              cy = y + dy;
+            while (cx >= 0 && cx < cols && cy >= 0 && cy < rows) {
+              const cCell = board[cy][cx];
+              if (cCell.piece === cell.piece && cCell.dead) {
+                len++;
+                cx += dx;
+                cy += dy;
+              } else break;
+            }
+
+            if (len >= 3) {
+              lines.push({
+                id: `holo-line-${x}-${y}-${dx}-${dy}`,
+                x1: x,
+                y1: y,
+                x2: x + dx * (len - 1),
+                y2: y + dy * (len - 1),
+                color: colors[cell.piece] || "#22d3ee",
+              });
+            }
+          });
+        }
+      }
+      return lines;
+    };
     // --- FAST RANDOM SAMPLER ---
     const sampleBatch = (buffer, batchSize) => {
       const currentSize = buffer.length;
@@ -2771,6 +2860,7 @@ export default function App() {
         memory: [],
         lastScore: 0,
         scores: { X: 0, O: 0, T: 0, S: 0 },
+        lines: [],
       }));
 
       runSimulationStep();
@@ -2787,6 +2877,7 @@ export default function App() {
       game.status = "active";
       game.moves = 0;
       game.lastScore = 0;
+      game.lines.length = 0; // <-- WIPE LINES ON RESET
       if (!game.scores) game.scores = { X: 0, O: 0, T: 0, S: 0 };
       else {
         game.scores.X = 0;
@@ -2813,11 +2904,13 @@ export default function App() {
           if (game.scores.X > bestScoreRef.current) {
             bestScoreRef.current = game.scores.X;
             setBestGameSnapshot({
-              board: game.board.map((row) => row.map((cell) => ({ ...cell }))), // Deep clone the board
+              board: game.board.map((row) => row.map((cell) => ({ ...cell }))),
               score: game.scores.X,
               moves: game.moves,
               cols: cols,
               rows: rows,
+              epoch: trainingEpoch + 1,
+              lines: [...game.lines],
             });
           }
 
@@ -2946,6 +3039,9 @@ export default function App() {
             );
             game.board = simResult.board;
             game.scores = simResult.scores;
+            if (simResult.newLines.length > 0) {
+              game.lines.push(...simResult.newLines);
+            }
 
             if (simResult.matchOver) {
               let enemyMax = Math.max(
@@ -3045,6 +3141,9 @@ export default function App() {
           );
           game.board = simResult.board;
           game.scores = simResult.scores;
+          if (simResult.newLines.length > 0) {
+            game.lines.push(...simResult.newLines);
+          }
 
           // Reward Math & Goal Evaluation
           let reward = 0.1;
@@ -3802,43 +3901,43 @@ export default function App() {
             `}</style>
 
             <div className="absolute inset-0 backdrop-blur-[60px] bg-slate-950/10" />
-
             <div
-              className="z-10 flex flex-col items-center text-center"
-              style={{ width: "90vw" }}
+              class="grid grid-cols-2 h-full w-full items-center"
+              style={{ paddingLeft: "10vw", paddingRight: "10vw" }}
             >
-              <div className="mb-4 space-y-2" style={{ width: "90vw" }}>
-                <div className="relative h-12 w-full flex items-center justify-center overflow-visible">
-                  <div
-                    className={`flex transition-all duration-700 ${isFlashing ? "opacity-0 blur-md scale-95" : "opacity-100 blur-0 scale-100"}`}
-                    style={{ "--wave-duration": "5s" }}
-                  >
-                    {"Learning...".split("").map((char, i) => (
-                      <span
-                        key={i}
-                        className="inline-block animate-smooth-pulse text-3xl"
-                        style={{
-                          "--index": i,
-                          animationDelay: `calc(var(--index) * 0.05s)`,
-                          lineHeight: "1.5",
-                          padding: "0 2px",
-                          display: "inline-block",
-                          transformOrigin: "bottom center",
-                        }}
-                      >
-                        {char === " " ? "\u00A0" : char}
-                      </span>
-                    ))}
-                  </div>
+              <div className="z-10 flex w-full flex-col items-center text-center">
+                <div className="mb-4 space-y-2">
+                  <div className="relative h-12 w-full flex items-center justify-center overflow-visible">
+                    <div
+                      className={`flex transition-all duration-700 ${isFlashing ? "opacity-0 blur-md scale-95" : "opacity-100 blur-0 scale-100"}`}
+                      style={{ "--wave-duration": "5s" }}
+                    >
+                      {"Learning...".split("").map((char, i) => (
+                        <span
+                          key={i}
+                          className="inline-block animate-smooth-pulse text-3xl"
+                          style={{
+                            "--index": i,
+                            animationDelay: `calc(var(--index) * 0.05s)`,
+                            lineHeight: "1.5",
+                            padding: "0 2px",
+                            display: "inline-block",
+                            transformOrigin: "bottom center",
+                          }}
+                        >
+                          {char === " " ? "\u00A0" : char}
+                        </span>
+                      ))}
+                    </div>
 
-                  <p
-                    className={`absolute text-4xl font-bold transition-all duration-500 ${isFlashing ? "opacity-100 scale-110" : "opacity-0 scale-125 blur-xl"}`}
-                  >
-                    VICTORY!
-                  </p>
-                </div>
-                <style>
-                  {`
+                    <p
+                      className={`absolute text-4xl font-bold transition-all duration-500 ${isFlashing ? "opacity-100 scale-110" : "opacity-0 scale-125 blur-xl"}`}
+                    >
+                      VICTORY!
+                    </p>
+                  </div>
+                  <style>
+                    {`
                   @keyframes text-shimmer {
                     0% { background-position: 150% 0; }
                     99% { background-position: -150% 0; }
@@ -3860,230 +3959,243 @@ export default function App() {
                     font-synthesis: none; 
                   }
                   `}
-                </style>
-                <div className="h-[1px] w-24 bg-gradient-to-r  from-transparent via-white/20 to-transparent mx-auto" />
-              </div>
+                  </style>
+                  <div className="h-[1px] w-24 bg-gradient-to-r  from-transparent via-white/20 to-transparent mx-auto" />
+                </div>
 
-              <div className="flex flex-col gap-1">
-                <span className="text-cyan-400/80 font-mono text-[11px] uppercase tracking-widest">
-                  <span className="text-fuchsia-300 font-bold bg-fuchsia-900/30 px-2 py-0.5 rounded border border-fuchsia-800/50">
-                    W: {trainingStats.wins} / L: {trainingStats.losses} / D:{" "}
-                    {trainingStats.draws}
+                <div className="w-full flex flex-col gap-1">
+                  <span className="text-cyan-400/80 font-mono text-[11px] uppercase tracking-widest">
+                    <span className="text-fuchsia-300 font-bold bg-fuchsia-900/30 px-2 py-0.5 rounded border border-fuchsia-800/50">
+                      W: {trainingStats.wins} / L: {trainingStats.losses} / D:{" "}
+                      {trainingStats.draws}
+                    </span>
                   </span>
-                </span>
-                <div className="flex items-center justify-center gap-3 mt-4 opacity-60">
-                  <div className="flex flex-col items-start">
-                    <span className="text-[9px] text-slate-400 uppercase">
-                      Confidence
-                    </span>
-                    <span className="text-white font-mono text-sm">
-                      {((1 - trainingStats.epsilon) * 100).toFixed(1)}%
-                    </span>
-                  </div>
-                  <div className="w-[1px] h-6 bg-white/10" />
-                  <div className="flex flex-col items-start">
-                    <span className="text-[9px] text-slate-400 uppercase">
-                      Win Rate
-                    </span>
-                    <span className="text-white font-mono text-sm">
-                      {trainingStats.wins + trainingStats.losses > 0
-                        ? (
-                            (trainingStats.wins /
-                              (trainingStats.wins + trainingStats.losses)) *
-                            100
-                          ).toFixed(1)
-                        : "0.0"}
-                      %
-                    </span>
-                  </div>
-                  <div className="w-[1px] h-6 bg-white/10" />
-                  <div className="flex flex-col items-start">
-                    <span className="text-[9px] text-slate-400 uppercase">
-                      Network Loss
-                    </span>
-                    <span
-                      className={`font-mono text-sm ${latestLoss === 0 ? "text-slate-500" : "text-white"}`}
-                    >
-                      {latestLoss === null || latestLoss === 0
-                        ? "INITIALIZING..."
-                        : latestLoss.toFixed(6)}
-                    </span>
-                  </div>
-                  <div className="h-8 w-24 mt-1 bg-white/10 rounded flex items-end px-1 overflow-hidden">
-                    <svg
-                      className="w-full h-full"
-                      preserveAspectRatio="none"
-                      viewBox="0 0 100 100"
-                    >
-                      <polyline
-                        fill="none"
-                        stroke="#22d3ee"
-                        strokeWidth="3"
-                        points={lossHistory
-                          .map((loss, i) => {
-                            const x = (i / (lossHistory.length - 1)) * 100;
-                            const y = 100 - Math.min(100, (loss / 2) * 100);
-                            return `${x},${y}`;
-                          })
-                          .join(" ")}
-                      />
-                    </svg>
-                  </div>
-                </div>
-
-                <div
-                  className="z-10 flex flex-col items-center text-center "
-                  style={{ width: "90vw" }}
-                >
-                  <div className="mb-1 mt-2 space-y-2">
-                    <div className="h-[1px] w-24 bg-gradient-to-r mb-4 from-transparent via-white/20 to-transparent mx-auto" />
-                    <h3 className="text-white/40 text-[10px] tracking-[0.6em] uppercase">
-                      Did you know...
-                    </h3>
-                  </div>
-
-                  <div className="relative h-32 w-full flex justify-center overflow-hidden">
-                    <AnimatePresence mode="wait">
-                      <motion.div
-                        key={tipIndex}
-                        initial={{ x: 30, opacity: 0 }}
-                        animate={{ x: 0, opacity: 1 }}
-                        exit={{ x: -30, opacity: 0 }}
-                        transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-                        className="absolute inset-0 flex items-center justify-center px-8"
+                  <div className="flex items-center justify-center gap-3 mt-4 opacity-60">
+                    <div className="flex flex-col items-start">
+                      <span className="text-[9px] text-slate-400 uppercase">
+                        Confidence
+                      </span>
+                      <span className="text-white font-mono text-sm">
+                        {((1 - trainingStats.epsilon) * 100).toFixed(1)}%
+                      </span>
+                    </div>
+                    <div className="w-[1px] h-6 bg-white/10" />
+                    <div className="flex flex-col items-start">
+                      <span className="text-[9px] text-slate-400 uppercase">
+                        Win Rate
+                      </span>
+                      <span className="text-white font-mono text-sm">
+                        {trainingStats.wins + trainingStats.losses > 0
+                          ? (
+                              (trainingStats.wins /
+                                (trainingStats.wins + trainingStats.losses)) *
+                              100
+                            ).toFixed(1)
+                          : "0.0"}
+                        %
+                      </span>
+                    </div>
+                    <div className="w-[1px] h-6 bg-white/10" />
+                    <div className="flex flex-col items-start">
+                      <span className="text-[9px] text-slate-400 uppercase">
+                        Network Loss
+                      </span>
+                      <span
+                        className={`font-mono text-sm ${latestLoss === 0 ? "text-slate-500" : "text-white"}`}
                       >
-                        <span className="text-white/60 font-mono text-sm leading-relaxed italic max-w-md">
-                          "{tips[tipIndex]}"
-                        </span>
-                      </motion.div>
-                    </AnimatePresence>
+                        {latestLoss === null || latestLoss === 0
+                          ? "INITIALIZING..."
+                          : latestLoss.toFixed(6)}
+                      </span>
+                    </div>
+                    <div className="h-8 w-24 mt-1 bg-white/10 rounded flex items-end px-1 overflow-hidden">
+                      <svg
+                        className="w-full h-full"
+                        preserveAspectRatio="none"
+                        viewBox="0 0 100 100"
+                      >
+                        <polyline
+                          fill="none"
+                          stroke="#22d3ee"
+                          strokeWidth="3"
+                          points={lossHistory
+                            .map((loss, i) => {
+                              const x = (i / (lossHistory.length - 1)) * 100;
+                              const y = 100 - Math.min(100, (loss / 2) * 100);
+                              return `${x},${y}`;
+                            })
+                            .join(" ")}
+                        />
+                      </svg>
+                    </div>
                   </div>
-                </div>
-                {bestGameSnapshot && (
-                  <div className="mt-8 flex flex-col items-center opacity-80 mix-blend-screen pointer-events-none">
-                    <div className="text-[10px] text-cyan-300 font-mono font-bold tracking-widest uppercase mb-3 flex items-center gap-2">
-                      <span className="w-8 h-[1px] bg-cyan-500/50" />
-                      Highest Score: {bestGameSnapshot.score} (
-                      {bestGameSnapshot.moves} Moves)
-                      <span className="w-8 h-[1px] bg-cyan-500/50" />
+
+                  <div className="z-10 flex flex-col items-center text-center ">
+                    <div className="mb-1 mt-2 space-y-2">
+                      <div className="h-[1px] w-24 bg-gradient-to-r mb-4 from-transparent via-white/20 to-transparent mx-auto" />
+                      <h3 className="text-white/40 text-[10px] tracking-[0.6em] uppercase">
+                        Did you know...
+                      </h3>
                     </div>
 
-                    {/* Scaled-down Board Wrapper */}
-                    <div className="scale-[0.55] origin-top border border-cyan-500/30 rounded shadow-[0_0_30px_rgba(6,182,212,0.2)] bg-slate-900/80 backdrop-blur-md p-1">
-                      <div
-                        className="grid relative"
-                        style={{
-                          gridTemplateColumns: `repeat(${bestGameSnapshot.cols}, minmax(0, 45px))`,
-                          gridTemplateRows: `repeat(${bestGameSnapshot.rows}, minmax(0, 45px))`,
-                        }}
-                      >
-                        {/* Read-Only SVG Walls */}
-                        <svg
-                          className="absolute top-0 left-0 w-full h-full pointer-events-none z-30"
-                          style={{ overflow: "visible" }}
+                    <div className="relative h-32 w-full flex justify-center overflow-hidden">
+                      <AnimatePresence mode="wait">
+                        <motion.div
+                          key={tipIndex}
+                          initial={{ x: 30, opacity: 0 }}
+                          animate={{ x: 0, opacity: 1 }}
+                          exit={{ x: -30, opacity: 0 }}
+                          transition={{
+                            duration: 0.6,
+                            ease: [0.22, 1, 0.36, 1],
+                          }}
+                          className="absolute inset-0 flex items-center justify-center px-8"
                         >
-                          {bestGameSnapshot.board.map((row, y) =>
-                            row.map((cell, x) => (
-                              <React.Fragment key={`wall-${x}-${y}`}>
-                                {cell.walls?.r && (
-                                  <line
-                                    x1={`${((x + 1) * 100) / bestGameSnapshot.cols}%`}
-                                    y1={`${(y * 100) / bestGameSnapshot.rows}%`}
-                                    x2={`${((x + 1) * 100) / bestGameSnapshot.cols}%`}
-                                    y2={`${((y + 1) * 100) / bestGameSnapshot.rows}%`}
-                                    stroke="#94a3b8"
-                                    strokeWidth="2"
-                                    strokeLinecap="round"
-                                  />
-                                )}
-                                {cell.walls?.b && (
-                                  <line
-                                    x1={`${(x * 100) / bestGameSnapshot.cols}%`}
-                                    y1={`${((y + 1) * 100) / bestGameSnapshot.rows}%`}
-                                    x2={`${((x + 1) * 100) / bestGameSnapshot.cols}%`}
-                                    y2={`${((y + 1) * 100) / bestGameSnapshot.rows}%`}
-                                    stroke="#94a3b8"
-                                    strokeWidth="2"
-                                    strokeLinecap="round"
-                                  />
-                                )}
-                              </React.Fragment>
-                            )),
-                          )}
-                        </svg>
+                          <span className="text-white/60 font-mono text-sm leading-relaxed italic max-w-md">
+                            "{tips[tipIndex]}"
+                          </span>
+                        </motion.div>
+                      </AnimatePresence>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              {bestGameSnapshot && (
+                <div className="justify-center flex  flex-col gap-4 items-center opacity-80 mix-blend-screen pointer-events-none">
+                  <div className="text-[10px] text-cyan-300 font-mono font-bold tracking-widest uppercase flex items-center gap-2">
+                    GEN-{bestGameSnapshot.epoch} | Highest Score:{" "}
+                    {bestGameSnapshot.score} ({bestGameSnapshot.moves} Moves)
+                  </div>
 
-                        {/* Read-Only Cells */}
+                  {/* Scaled-down Board Wrapper */}
+                  <div className=" border border-cyan-500/30 rounded shadow-[0_0_30px_rgba(6,182,212,0.2)] bg-slate-900/80 backdrop-blur-md p-1">
+                    <div
+                      className="grid relative"
+                      style={{
+                        gridTemplateColumns: `repeat(${bestGameSnapshot.cols}, minmax(0, 45px))`,
+                        gridTemplateRows: `repeat(${bestGameSnapshot.rows}, minmax(0, 45px))`,
+                      }}
+                    >
+                      {/* Read-Only SVG Walls */}
+                      <svg
+                        className="absolute top-0 left-0 w-full h-full pointer-events-none z-30"
+                        style={{ overflow: "visible" }}
+                      >
                         {bestGameSnapshot.board.map((row, y) =>
-                          row.map((cell, x) => {
-                            const isVoid = cell.type === "void";
-                            return (
-                              <div
-                                key={`${y}-${x}`}
-                                className={`
+                          row.map((cell, x) => (
+                            <React.Fragment key={`wall-${x}-${y}`}>
+                              {cell.walls?.r && (
+                                <line
+                                  x1={`${((x + 1) * 100) / bestGameSnapshot.cols}%`}
+                                  y1={`${(y * 100) / bestGameSnapshot.rows}%`}
+                                  x2={`${((x + 1) * 100) / bestGameSnapshot.cols}%`}
+                                  y2={`${((y + 1) * 100) / bestGameSnapshot.rows}%`}
+                                  stroke="#94a3b8"
+                                  strokeWidth="2"
+                                  strokeLinecap="round"
+                                />
+                              )}
+                              {cell.walls?.b && (
+                                <line
+                                  x1={`${(x * 100) / bestGameSnapshot.cols}%`}
+                                  y1={`${((y + 1) * 100) / bestGameSnapshot.rows}%`}
+                                  x2={`${((x + 1) * 100) / bestGameSnapshot.cols}%`}
+                                  y2={`${((y + 1) * 100) / bestGameSnapshot.rows}%`}
+                                  stroke="#94a3b8"
+                                  strokeWidth="2"
+                                  strokeLinecap="round"
+                                />
+                              )}
+                            </React.Fragment>
+                          )),
+                        )}
+                        {bestGameSnapshot.lines &&
+                          bestGameSnapshot.lines.map((line) => (
+                            <line
+                              key={line.id}
+                              x1={`${((line.x1 + 0.5) * 100) / bestGameSnapshot.cols}%`}
+                              y1={`${((line.y1 + 0.5) * 100) / bestGameSnapshot.rows}%`}
+                              x2={`${((line.x2 + 0.5) * 100) / bestGameSnapshot.cols}%`}
+                              y2={`${((line.y2 + 0.5) * 100) / bestGameSnapshot.rows}%`}
+                              stroke={line.color}
+                              strokeWidth="3"
+                              strokeLinecap="round"
+                              className="opacity-90 drop-shadow-[0_0_8px_rgba(34,211,238,0.8)]"
+                            />
+                          ))}
+                      </svg>
+
+                      {/* Read-Only Cells */}
+                      {bestGameSnapshot.board.map((row, y) =>
+                        row.map((cell, x) => {
+                          const isVoid = cell.type === "void";
+                          return (
+                            <div
+                              key={`${y}-${x}`}
+                              className={`
                                 relative w-[45px] h-[45px] box-border
                                 ${isVoid ? "bg-transparent" : "border border-cyan-900/40 bg-slate-800/40"}
                                 ${cell.isTarget ? "bg-indigo-900/30 shadow-[inset_0_0_10px_rgba(99,102,241,0.2)]" : ""}
                               `}
-                              >
-                                {!isVoid && (
-                                  <div
-                                    style={{
-                                      transform: ["zap", "mov", "dup"].includes(
-                                        cell.type,
-                                      )
-                                        ? `rotate(${{ u: 0, r: 90, d: 180, l: 270 }[cell.dir] || 0}deg)`
-                                        : "none",
-                                    }}
-                                    className="absolute inset-0 flex items-center justify-center p-1"
-                                  >
-                                    {/* Machine Icons */}
-                                    {(() => {
-                                      const bgIcon = getCellBgIcon(cell);
-                                      if (!bgIcon) return null;
-                                      return (
-                                        <>
+                            >
+                              {!isVoid && (
+                                <div
+                                  style={{
+                                    transform: ["zap", "mov", "dup"].includes(
+                                      cell.type,
+                                    )
+                                      ? `rotate(${{ u: 0, r: 90, d: 180, l: 270 }[cell.dir] || 0}deg)`
+                                      : "none",
+                                  }}
+                                  className="absolute inset-0 flex items-center justify-center p-1"
+                                >
+                                  {/* Machine Icons */}
+                                  {(() => {
+                                    const bgIcon = getCellBgIcon(cell);
+                                    if (!bgIcon) return null;
+                                    return (
+                                      <>
+                                        <img
+                                          src={`/icons/${bgIcon}.svg`}
+                                          alt={cell.type}
+                                          className="absolute z-0 opacity-50 w-[24px] h-[24px]"
+                                        />
+                                        {cell.mechanicalLock && (
                                           <img
-                                            src={`/icons/${bgIcon}.svg`}
-                                            alt={cell.type}
-                                            className="absolute z-0 opacity-50 w-[24px] h-[24px]"
+                                            src="/icons/Lock.svg"
+                                            alt="locked"
+                                            className="absolute z-20 w-[24px] h-[24px]"
                                           />
-                                          {cell.mechanicalLock && (
-                                            <img
-                                              src="/icons/Lock.svg"
-                                              alt="locked"
-                                              className="absolute z-20 w-[24px] h-[24px]"
-                                            />
-                                          )}
-                                          {cell.flipMod && (
-                                            <img
-                                              src="/icons/Flip.svg"
-                                              alt="flip"
-                                              className="absolute z-5 w-[24px] h-[24px]"
-                                            />
-                                          )}
-                                        </>
-                                      );
-                                    })()}
+                                        )}
+                                        {cell.flipMod && (
+                                          <img
+                                            src="/icons/Flip.svg"
+                                            alt="flip"
+                                            className="absolute z-5 w-[24px] h-[24px]"
+                                          />
+                                        )}
+                                      </>
+                                    );
+                                  })()}
 
-                                    {/* Player Pieces (Made slightly translucent/glowing for hologram effect) */}
-                                    {cell.piece && (
-                                      <img
-                                        src={`/icons/${cell.piece === "N" ? "Neutral" : cell.piece}.svg`}
-                                        alt={cell.piece}
-                                        className={`absolute z-10 w-[32px] h-[32px] ${cell.dead ? "opacity-40 grayscale blur-[0.5px]" : "drop-shadow-[0_0_10px_rgba(34,211,238,0.8)] opacity-90 brightness-125"}`}
-                                      />
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          }),
-                        )}
-                      </div>
+                                  {/* Player Pieces (Made slightly translucent/glowing for hologram effect) */}
+                                  {cell.piece && (
+                                    <img
+                                      src={`/icons/${cell.piece === "N" ? "Neutral" : cell.piece}.svg`}
+                                      alt={cell.piece}
+                                      className={`absolute z-10 w-[32px] h-[32px] ${cell.dead ? "opacity-40 grayscale blur-[0.5px]" : "drop-shadow-[0_0_10px_rgba(34,211,238,0.8)] opacity-90 brightness-125"}`}
+                                    />
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        }),
+                      )}
                     </div>
                   </div>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           </div>
         )}
