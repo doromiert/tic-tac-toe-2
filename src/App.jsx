@@ -109,6 +109,15 @@ export default function App() {
   const [vramUsage, setVramUsage] = useState({ bytes: 0, tensors: 0 });
 
   const tips = [
+    "The background flashing Cyan is the AI having a brief moment of clarity before being bullied by the procedural bot again.",
+    "Red background? The bot is currently a 'Professional Loser.' But it's practicing!",
+    "If the background stays Cyan for more than 10 seconds, hide your credit cards—the AI is becoming too powerful.",
+    "The 'Color Pulse' is the heartbeat of the Gradient Descent. It's beautiful, in a 'my-PC-is-melting' kind of way.",
+    "The AI isn't failing; it's just finding 10,000 ways how NOT to play Tic-Tac-Toe 2.",
+    "That flash of green was the AI almost discovering a winning fork. Then it got distracted by a shiny corner tile.",
+    "Current Mood: Strategically Panicking.",
+    "Every time the BG turns red, a neuron gets its wings (and a bunch of weights get flattened).",
+    "The background color is the only honest thing in this UI. It knows exactly how much the AI is struggling.",
     "10,000 Epochs: The AI has officially spent more time playing Tic-Tac-Toe than you've spent sleeping this week.",
     "Epsilon is at 80%? That's not 'Randomness,' that's 'Creative Genius.'",
     "Two wins! It's not a fluke anymore; it's a trend.",
@@ -245,7 +254,12 @@ export default function App() {
 
   useEffect(() => {
     const interval = setInterval(() => {
-      setTipIndex((prev) => (prev + 1) % tips.length);
+      setTipIndex((prev) => {
+        let next = Math.floor(Math.random() * tips.length);
+        // If we accidentally rolled the same tip, try one more time to find a different one
+        if (next === prev) next = (next + 1) % tips.length;
+        return next;
+      });
     }, 20000); // 20 seconds
     return () => clearInterval(interval);
   }, []);
