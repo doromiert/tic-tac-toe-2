@@ -109,6 +109,15 @@ export default function App() {
   const [vramUsage, setVramUsage] = useState({ bytes: 0, tensors: 0 });
 
   const tips = [
+    "The loss graph is auto-scaling because the AI's failures are too small for a fixed scale to handle.",
+    "If the graph looks like a heartbeat, the AI is alive. If it's a flat line, it's either perfect or braindead.",
+    "Normalization: Making the AI's 0.00001 loss look like a mountain so you feel better about yourself.",
+    "The Y-axis is relative. Much like the AI's sense of morality when it's losing.",
+    "We don't show the real numbers on the graph because they're actually just crying emojis.",
+    "Floating point math is the reason your GPU is currently a space heater.",
+    "Scaling the graph is the UI equivalent of 'Enhance!' from a 90s detective show.",
+    "The line is Cyan because it's the color of 'almost working.'",
+    "If the line disappears, the AI has achieved Nirvana (or NaN).",
     "The AI isn't 'randomly' clicking; it's just 'exploring the possibility space of failure.'",
     "If the bot plays in a 2x2 square forever, it's not a bug, it's an avant-garde protest against your reward function.",
     "Epsilon is currently higher than my will to live on a Monday morning.",
@@ -4082,8 +4091,27 @@ export default function App() {
                           strokeWidth="3"
                           points={lossHistory
                             .map((loss, i) => {
+                              // 1. Find the range of the current data
+                              const maxLoss = Math.max(...lossHistory);
+                              const minLoss = Math.min(...lossHistory);
+                              const range = maxLoss - minLoss;
+
+                              // 2. Calculate X normally
                               const x = (i / (lossHistory.length - 1)) * 100;
-                              const y = 100 - Math.min(100, (loss / 2) * 100);
+
+                              // 3. Dynamic Y Calculation:
+                              // If all values are the same (range is 0), put the line in the middle (50)
+                              // Otherwise, scale the loss value between 0 and 100
+                              let y;
+                              if (range === 0) {
+                                y = 50;
+                              } else {
+                                // Normalize loss: ((value - min) / range) gives us 0.0 to 1.0
+                                // We multiply by 100 to get percentage, then subtract from 100
+                                // because SVG Y-axis grows downwards.
+                                y = 100 - ((loss - minLoss) / range) * 100;
+                              }
+
                               return `${x},${y}`;
                             })
                             .join(" ")}
