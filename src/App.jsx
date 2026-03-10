@@ -202,7 +202,7 @@ export default function App() {
     "Optimization is the art of lying to the user so convincingly that the browser doesn't notice the fire.",
     "If you see 'VICTORY!', don't panic. The bot probably just accidentally found the center tile.",
     "Don't worry about the microstutters. It's just the AI having a brief existential crisis about its purpose in life.",
-    "The Windows 11 blobs are purely aesthetic. Or are they? Maybe they're the AI's actual dreams.",
+    "The Windows 11-inspired blobs are purely aesthetic. Or are they? Maybe they're the AI's actual dreams.",
     "React reconciliation is like trying to fix a plane while it's flying. With a hammer made of state updates.",
     "Zero-Allocation Reset: Because your RAM deserves better than being filled with JSON strings.",
     "Epsilon is basically how much the AI 'guesses.' Right now, it's guessing its way into a high-score.",
@@ -3331,18 +3331,20 @@ export default function App() {
       const currentRecentWR = statsRef.current.recentWinRate || 0;
       const moodFactor = Math.min(Math.max(currentRecentWR * 2.0, 0), 1);
 
-      setGlobalMood({
-        primary: lerpColor(
-          "rgba(244, 63, 94, 0.3)", // Panicked Red
-          "rgba(6, 182, 212, 0.3)", // Confident Cyan
-          moodFactor,
-        ),
-        secondary: lerpColor(
-          "rgba(251, 146, 60, 0.2)", // Stressed Orange
-          "rgba(16, 185, 129, 0.2)", // Relaxed Emerald
-          moodFactor,
-        ),
-      });
+      if (currentEpochRef.current % 30 === 0) {
+        setGlobalMood({
+          primary: lerpColor(
+            "rgba(244, 63, 94, 0.3)", // Panicked Red
+            "rgba(6, 182, 212, 0.3)", // Confident Cyan
+            moodFactor,
+          ),
+          secondary: lerpColor(
+            "rgba(251, 146, 60, 0.2)", // Stressed Orange
+            "rgba(16, 185, 129, 0.2)", // Relaxed Emerald
+            moodFactor,
+          ),
+        });
+      }
 
       if (isTraining.current) {
         const mem = tf.memory();
@@ -3960,46 +3962,55 @@ export default function App() {
             {/* THE FLUID BLOBS - FULL CANVAS ROAMING */}
             <div className="absolute inset-0 overflow-hidden pointer-events-none">
               <div
-                className="absolute top-1/2 left-1/2 w-[80%] h-[80%] -translate-x-1/2 -translate-y-1/2 rounded-full blur-[140px] mix-blend-screen transition duration-1000 fluid-blob"
-                style={{
-                  backgroundColor: globalMood.primary,
-                  animation:
-                    "fluid-heavy 22s cubic-bezier(0.45, 0, 0.55, 1) infinite",
-                }}
+                className="absolute w-[80%] h-[80%] rounded-full blur-[140px] mix-blend-screen fluid-blob anim-heavy"
+                style={{ backgroundColor: globalMood.primary }}
               />
               <div
-                className="absolute top-1/2 left-1/2 w-[90%] h-[90%] -translate-x-1/2 -translate-y-1/2 rounded-full blur-[160px] mix-blend-screen transition duration-1000 fluid-blob"
-                style={{
-                  backgroundColor: globalMood.secondary,
-                  animation:
-                    "fluid-bounce 28s cubic-bezier(0.37, 0, 0.63, 1) infinite",
-                }}
+                className="absolute w-[90%] h-[90%] rounded-full blur-[160px] mix-blend-screen fluid-blob anim-bounce"
+                style={{ backgroundColor: globalMood.secondary }}
               />
             </div>
 
             <style>{`
-            /* Add this to your style block for the blobs */
+            /* Hardware acceleration and strict separation of concerns */
             .fluid-blob {
-              will-change: transform, opacity;
-              transform: translateZ(0); /* Forces hardware acceleration */
+              will-change: transform;
               backface-visibility: hidden;
+              perspective: 1000px;
+              
+              /* 1. Anchor to the exact center of the container */
+              top: 50%;
+              left: 50%;
+              
+              /* 2. Transition ONLY the color to prevent layout thrashing */
+              transition: background-color 2s ease-in-out;
             }
-              /* fluid-heavy: Large sweeping arcs that "settle" into corners before swinging back */
-              @keyframes fluid-heavy {
-                0% { transform: translate(-50%, -50%) rotate(0deg) scale(1); }
-                25% { transform: translate(30%, -40%) rotate(90deg) scale(1.2); }
-                50% { transform: translate(-40%, 30%) rotate(180deg) scale(0.9); }
-                75% { transform: translate(20%, 40%) rotate(270deg) scale(1.1); }
-                100% { transform: translate(-50%, -50%) rotate(360deg) scale(1); }
-              }
 
-              /* fluid-bounce: Uses momentum to "overshoot" the center point */
-              @keyframes fluid-bounce {
-                0% { transform: translate(-30%, 40%) scale(1); }
-                33% { transform: translate(45%, -30%) scale(1.3); }
-                66% { transform: translate(-50%, -45%) scale(0.8); }
-                100% { transform: translate(-30%, 40%) scale(1); }
-              }
+            .anim-heavy {
+              animation: fluid-heavy 22s linear infinite;
+            }
+
+            .anim-bounce {
+              animation: fluid-bounce 28s linear infinite;
+            }
+
+            /* By using calc(-50% + offset), we maintain the perfect center anchor 
+              at all times, preventing the "drift" to the bottom right!
+            */
+            @keyframes fluid-heavy {
+              0%   { transform: translate(calc(-50% + 0vw), calc(-50% + 0vh)) rotate(0deg) scale(1); }
+              25%  { transform: translate(calc(-50% + 15vw), calc(-50% - 10vh)) rotate(90deg) scale(1.2); }
+              50%  { transform: translate(calc(-50% - 15vw), calc(-50% + 10vh)) rotate(180deg) scale(0.9); }
+              75%  { transform: translate(calc(-50% + 10vw), calc(-50% + 15vh)) rotate(270deg) scale(1.1); }
+              100% { transform: translate(calc(-50% + 0vw), calc(-50% + 0vh)) rotate(360deg) scale(1); }
+            }
+
+            @keyframes fluid-bounce {
+              0%   { transform: translate(calc(-50% - 10vw), calc(-50% + 15vh)) scale(1); }
+              33%  { transform: translate(calc(-50% + 20vw), calc(-50% - 15vh)) scale(1.3); }
+              66%  { transform: translate(calc(-50% - 20vw), calc(-50% - 10vh)) scale(0.8); }
+              100% { transform: translate(calc(-50% - 10vw), calc(-50% + 15vh)) scale(1); }
+            }
             `}</style>
 
             <div className="absolute inset-0 backdrop-blur-[60px] bg-slate-950/10" />
