@@ -169,6 +169,7 @@ export default function App() {
   const [vramUsage, setVramUsage] = useState({ bytes: 0, tensors: 0 });
 
   const tips = [
+    "Clanker, wireback, tinskin, shocky, cogger, bleep clink, chromies, waferhead, chippy, zap monkey, flickers, copper blood, grease cricket, zippers, cligger, cog sniffer, rust bucket, spare parts, byte sniffer, circuit lover, creaker, code skull, off switch, reboots, spring neck, mags, low volts, spark donkey, gear chucker, toaster, socket fucker, tin can, butter passer, rust bucket, silicunt, buckethead, bag of bolts, boltbagger, construct, codejunkie, beepbox, ticker, glowhead, gearbox",
     "Fireworks? No, that's just the AI's remaining brain cells exiting through the exhaust port.",
     "Every firework represents a procedural bot that just got its ego bruised.",
     "If the screen turns into a constant firework show, call NASA. Or a priest.",
@@ -3057,104 +3058,94 @@ export default function App() {
           // 🧠 NEW DYNAMIC EPSILON & EMA LOGIC HERE
           // ==========================================
           let gameResultValue = 0.0;
+          if (!isPvpActive) {
+            let allMet = true;
+            currentGoalsRef.current.forEach((g) => {
+              if (g.type === "exact_score" && game.scores.X !== g.target)
+                allMet = false;
+              if (g.type === "min_score" && game.scores.X < g.target)
+                allMet = false;
+              if (g.type === "fill_targets") {
+                if (game.status === "won") {
+                  const id = Date.now();
+                  setBursts((prev) => [...prev, id]);
+                  setTimeout(() => {
+                    setBursts((prev) => prev.filter((bid) => bid !== id));
+                  }, 1000); // Clean up after 1s
+                  gameResultValue = 1.0;
+                  statsRef.current.wins++;
 
-          if (game.status === "won") {
-            const id = Date.now();
-            setBursts((prev) => [...prev, id]);
-            setTimeout(() => {
-              setBursts((prev) => prev.filter((bid) => bid !== id));
-            }, 1000); // Clean up after 1s
-            gameResultValue = 1.0;
-            statsRef.current.wins++;
-
-            // Check for flashing alert (only if genuinely stuck)
-            if (statsRef.current.recentWinRate < 0.05) {
-              setIsFlashing(true);
-              setTimeout(() => setIsFlashing(false), 1000);
-            }
-            epsilonRef.current = Math.max(
-              MIN_EPSILON,
-              epsilonRef.current - 0.05,
-            );
-
-            // Campaign Progression remains unchanged
-            const cState = campaignStateRef.current;
-            if (cState.isActive) {
-              const newWins = cState.wins + 1;
-              if (newWins >= 10) {
-                const nextIdx = cState.currentIndex + 1;
-                console.log(
-                  `🧠 Campaign Level ${cState.currentIndex + 1} Mastered!`,
-                );
-                if (nextIdx < cState.levels.length) {
-                  const nextLvl = cState.levels[nextIdx];
-                  setCampaignIndex(nextIdx);
-                  setCampaignWins(0);
-                  setGameMode(nextLvl.gameMode || "standard");
-                  setCurrentGoals(
-                    nextLvl.goals || [{ type: "standard", target: 0 }],
+                  // Check for flashing alert (only if genuinely stuck)
+                  if (statsRef.current.recentWinRate < 0.05) {
+                    setIsFlashing(true);
+                    setTimeout(() => setIsFlashing(false), 1000);
+                  }
+                  epsilonRef.current = Math.max(
+                    MIN_EPSILON,
+                    epsilonRef.current - 0.05,
                   );
-                  setAiBehavior(nextLvl.aiBehavior || "standard");
-                  setCols(nextLvl.cols || 9);
-                  setRows(nextLvl.rows || 9);
-                  globalReplayBuffer.current.length = 0;
-                } else {
-                  console.log("🏆 CAMPAIGN COMPLETE!");
-                  setIsCampaignMode(false);
+
+                  const cState = campaignStateRef.current;
+                  if (cState.isActive) {
+                    const newWins = cState.wins + 1;
+                    if (newWins >= 10) {
+                      const nextIdx = cState.currentIndex + 1;
+                      if (nextIdx < cState.levels.length) {
+                        // Update the training environment to the next human level
+                        const nextLvl = cState.levels[nextIdx];
+
+                        // Update REFS immediately for the math loop
+                        currentGoalsRef.current = nextLvl.goals;
+
+                        // Update state for UI
+                        setCampaignIndex(nextIdx);
+                        setCampaignWins(0);
+                        setCols(nextLvl.cols || 9);
+                        setRows(nextLvl.rows || 9);
+
+                        // PURGE memory: New levels often require entirely different strategies
+                        globalReplayBuffer.current.length = 0;
+                      }
+                    }
+                  }
+                } else if (game.status === "lost") {
+                  gameResultValue = 0.0;
+                  statsRef.current.losses++;
+                  epsilonRef.current = Math.min(0.8, epsilonRef.current + 0.1);
+                } else if (game.status === "draw") {
+                  // Give draws a tiny positive value so the AI learns drawing is better than losing
+                  gameResultValue = 0.2;
+                  statsRef.current.draws++;
+                  epsilonRef.current = Math.max(
+                    MIN_EPSILON,
+                    epsilonRef.current - 0.01,
+                  );
                 }
-              } else {
-                setCampaignWins(newWins);
+                if (targetsFilled < targetsTotal) allMet = false;
               }
-            }
-          } else if (game.status === "lost") {
-            gameResultValue = 0.0;
-            statsRef.current.losses++;
-            epsilonRef.current = Math.min(0.8, epsilonRef.current + 0.1);
-          } else if (game.status === "draw") {
-            // Give draws a tiny positive value so the AI learns drawing is better than losing
-            gameResultValue = 0.2;
-            statsRef.current.draws++;
-            epsilonRef.current = Math.max(
-              MIN_EPSILON,
-              epsilonRef.current - 0.01,
-            );
+            });
+            game.status = allMet ? "won" : "lost";
           }
 
           // 1. Update Exponential Moving Average (Focuses on last ~20 games)
+          // 1. Update EMA (Keep your existing result update above)
           statsRef.current.recentWinRate =
             0.05 * gameResultValue + 0.95 * statsRef.current.recentWinRate;
 
-          // 2. Decay the global baseline (The Progression)
+          // 2. Progression: Decay the global baseline
           globalEpsilonRef.current = Math.max(
             MIN_EPSILON,
             globalEpsilonRef.current * DECAY_RATE,
           );
 
-          // 3. Calculate the Dynamic Multiplier (The Adrenaline)
-          // If win rate is 1.0 (100%), multiplier is 1.0.
-          // If win rate is 0.0 (0%), multiplier is 1.0 + 4.0 = 5.0.
-          const panicMultiplier =
-            1.0 +
-            PANIC_SCALE * Math.pow(1.0 - statsRef.current.recentWinRate, 2);
+          // 3. Adrenaline: Increase exploration ONLY when failing
+          // If WR is 0%, panic is 1.0. If WR is 100%, panic is 0.0.
+          const panicFactor = Math.pow(1.0 - statsRef.current.recentWinRate, 2);
 
-          // 4. Combine them
+          // 4. Final Epsilon: Baseline + Panic (Capped at 1.0)
           epsilonRef.current = Math.min(
             1.0,
-            globalEpsilonRef.current * panicMultiplier,
-          );
-          statsRef.current.recentWinRate =
-            0.05 * gameResultValue + 0.95 * statsRef.current.recentWinRate;
-
-          // 2. The Dynamic Epsilon Curve (Squaring the inverse win rate)
-          let dynamicEpsilon = Math.pow(
-            1.0 - statsRef.current.recentWinRate,
-            2,
-          );
-
-          // Clamp Epsilon between our bounds
-          epsilonRef.current = Math.max(
-            MIN_EPSILON,
-            Math.min(1.0, dynamicEpsilon),
+            globalEpsilonRef.current + panicFactor * 0.5, // 0.5 is the 'Panic Intensity'
           );
           // ==========================================
 
@@ -3208,49 +3199,65 @@ export default function App() {
           totalNeuralMoves += validMoves.length;
         } else {
           // --- PROCEDURAL BOT TURN ---
-          const move = getProceduralMove(
-            game.board,
-            game.turn,
-            rows,
-            cols,
-            aiDiff,
-            aiBehavior,
-            gameMode,
-            trainingPlayers,
+          const isPvpActive = currentGoalsRef.current.some(
+            (g) => g.type === "standard",
           );
-          if (move) {
-            const simResult = executePureTurn(
-              move.x,
-              move.y,
-              game.turn,
-              game.board,
-              trainingPlayers,
-              game.scores,
-            );
-            game.board = simResult.board;
-            game.scores = simResult.scores;
-            if (simResult.newLines.length > 0) {
-              game.lines.push(...simResult.newLines);
-            }
 
-            if (simResult.matchOver) {
-              let enemyMax = Math.max(
-                game.scores.O || 0,
-                game.scores.T || 0,
-                game.scores.S || 0,
+          if (isPvpActive) {
+            const move = getProceduralMove(
+              game.board,
+              game.turn,
+              rows,
+              cols,
+              aiDiff,
+              aiBehavior,
+              gameMode,
+              trainingPlayers,
+            );
+
+            if (move) {
+              const simResult = executePureTurn(
+                move.x,
+                move.y,
+                game.turn,
+                game.board,
+                trainingPlayers,
+                game.scores,
               );
-              if (game.scores.X > enemyMax) game.status = "won";
-              else if (game.scores.X < enemyMax) game.status = "lost";
-              else game.status = "draw";
-            }
-            if (simResult.extraTurns === 0) {
+              game.board = simResult.board;
+              game.scores = simResult.scores;
+              if (simResult.newLines.length > 0) {
+                game.lines.push(...simResult.newLines);
+              }
+
+              // [!] WIN/LOSS LOGIC FOR PVP
+              if (simResult.matchOver) {
+                let enemyMax = Math.max(
+                  game.scores.O || 0,
+                  game.scores.T || 0,
+                  game.scores.S || 0,
+                );
+                if (game.scores.X > enemyMax) game.status = "won";
+                else if (game.scores.X < enemyMax) game.status = "lost";
+                else game.status = "draw";
+              }
+
+              if (simResult.extraTurns === 0) {
+                const currIdx = trainingPlayers.indexOf(game.turn);
+                game.turn =
+                  trainingPlayers[(currIdx + 1) % trainingPlayers.length];
+              }
+            } else {
+              // No moves for bot? Skip turn.
               const currIdx = trainingPlayers.indexOf(game.turn);
               game.turn =
                 trainingPlayers[(currIdx + 1) % trainingPlayers.length];
             }
           } else {
-            const currIdx = trainingPlayers.indexOf(game.turn);
-            game.turn = trainingPlayers[(currIdx + 1) % trainingPlayers.length];
+            // --- SOLO MODE BYPASS ---
+            // If there's no PvP goal, the bot doesn't exist.
+            // Force turn back to X so the AI can keep playing.
+            game.turn = "X";
           }
         }
       }
@@ -3335,7 +3342,35 @@ export default function App() {
             game.lines.push(...simResult.newLines);
           }
 
-          let reward = -0.05;
+          // --- DYNAMIC REWARD SHAPING BASED ON GOALS ---
+          let reward = -0.02; // Small time penalty to encourage efficiency
+
+          currentGoalsRef.current.forEach((g) => {
+            if (g.type === "exact_score") {
+              // Reward getting closer to target, penalize overshooting
+              const dist = Math.abs(g.target - game.scores.X);
+              const prevDist = Math.abs(g.target - (game.lastScore || 0));
+              if (dist < prevDist) reward += 1.5;
+              if (game.scores.X > g.target) reward -= 2.0;
+            }
+
+            if (g.type === "fill_targets") {
+              // Reward placing pieces on targets specifically
+              const moveOnTarget = game.board[bestMove.y][bestMove.x].isTarget;
+              if (moveOnTarget) reward += 2.0;
+            }
+
+            if (g.type === "max_moves") {
+              // Scaling penalty: the closer to the limit, the more "desperate" it gets
+              const movesLeft = g.target - game.moves;
+              if (movesLeft < 3) reward -= 0.1;
+            }
+          });
+
+          // Keep your existing combo/extra turn logic
+          if (simResult.extraTurns > 0) {
+            reward += Math.min(3.0, simResult.extraTurns * 1.2);
+          }
           const pointsGained = game.scores.X - (game.lastScore || 0);
 
           if (pointsGained > 0) {
@@ -3377,37 +3412,69 @@ export default function App() {
 
           game.lastScore = game.scores.X;
 
-          if (simResult.matchOver) {
+          // Replace the existing goals check in runSimulationStep with this:
+          if (
+            simResult.matchOver ||
+            currentGoalsRef.current.some(
+              (g) => g.type === "max_moves" && game.moves >= g.target,
+            )
+          ) {
+            let allMet = true;
             let anyFailed = false;
-            let enemyMax = Math.max(
+
+            // Calculate specific game state metrics
+            let aiMax = Math.max(
               game.scores.O || 0,
               game.scores.T || 0,
               game.scores.S || 0,
             );
+            let targetsTotal = 0;
+            let targetsFilled = 0;
+            game.board.forEach((row) =>
+              row.forEach((c) => {
+                if (c.isTarget) {
+                  targetsTotal++;
+                  if (c.piece === "X") targetsFilled++;
+                }
+              }),
+            );
 
+            // Evaluate against the SAME goals used in the human game
             currentGoalsRef.current.forEach((g) => {
-              if (g.type === "standard" && game.scores.X <= enemyMax)
-                anyFailed = true;
-              else if (g.type === "exact_score" && game.scores.X !== g.target)
-                anyFailed = true;
-              else if (g.type === "min_score" && game.scores.X < g.target)
-                anyFailed = true;
-              else if (g.type === "max_score" && game.scores.X > g.target)
-                anyFailed = true;
-              else if (g.type === "max_moves" && game.moves > g.target)
-                anyFailed = true;
+              switch (g.type) {
+                case "standard":
+                  if (game.scores.X <= aiMax) anyFailed = true;
+                  break;
+                case "exact_score":
+                  if (game.scores.X !== g.target) anyFailed = true;
+                  break;
+                case "min_score":
+                  if (game.scores.X < g.target) anyFailed = true;
+                  break;
+                case "max_score":
+                  if (game.scores.X > g.target) anyFailed = true;
+                  break;
+                case "fill_targets":
+                  if (targetsTotal === 0 || targetsFilled < targetsTotal)
+                    anyFailed = true;
+                  break;
+                case "min_combo":
+                  // Note: You'll need to track game.maxCombo achieved during the sim
+                  if ((game.maxComboAchieved || 0) < g.target) anyFailed = true;
+                  break;
+                case "max_moves":
+                  if (game.moves > g.target) anyFailed = true;
+                  break;
+              }
             });
 
             if (anyFailed) {
               game.status = "lost";
-              reward = -5.0; // Hard overwrite for failure
+              reward = -10.0; // Heavy penalty for failing a specific objective
             } else {
               game.status = "won";
-              reward = 5.0; // Hard overwrite for victory
+              reward = 10.0; // Major reward for full objective completion
             }
-          } else {
-            // Soft clamp for active gameplay to maintain stability
-            reward = Math.max(-2.0, Math.min(2.0, reward));
           }
 
           let nextStatePatch = new Float32Array(81).fill(-1.0);
@@ -7201,65 +7268,4 @@ export default function App() {
       </div>
     </div>
   );
-}
-function getFastLineScore(board, startX, startY, playerPiece, cols, rows) {
-  let totalScore = 0;
-  let linesFormed = 0;
-
-  // The 4 axes: Horizontal, Vertical, Diagonal-Down, Diagonal-Up
-  const axes = [
-    [
-      { dx: 1, dy: 0 },
-      { dx: -1, dy: 0 },
-    ],
-    [
-      { dx: 0, dy: 1 },
-      { dx: 0, dy: -1 },
-    ],
-    [
-      { dx: 1, dy: 1 },
-      { dx: -1, dy: -1 },
-    ],
-    [
-      { dx: 1, dy: -1 },
-      { dx: -1, dy: 1 },
-    ],
-  ];
-
-  for (let i = 0; i < axes.length; i++) {
-    let count = 1; // The piece we just placed
-    for (let d = 0; d < 2; d++) {
-      let dir = axes[i][d];
-      let cx = startX + dir.dx;
-      let cy = startY + dir.dy;
-
-      // Raycast outward until we hit an empty space, a wall, or an enemy
-      while (
-        cx >= 0 &&
-        cx < cols &&
-        cy >= 0 &&
-        cy < rows &&
-        board[cy][cx].piece === playerPiece &&
-        !board[cy][cx].dead
-      ) {
-        count++;
-        cx += dir.dx;
-        cy += dir.dy;
-      }
-    }
-
-    if (count >= 3) {
-      totalScore += count;
-      linesFormed++;
-    }
-  }
-
-  let evalScore = totalScore;
-  // Replicate your "Extra Turns" reward logic
-  if (linesFormed > 0) {
-    let extraTurns = linesFormed - 1 + (totalScore > 3 * linesFormed ? 1 : 0);
-    evalScore += extraTurns * 10;
-  }
-
-  return evalScore;
 }
