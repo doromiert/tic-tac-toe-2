@@ -1,4 +1,5 @@
 import "./index.css";
+import { PS5Swarm } from "./AmbientSwarm";
 import { motion, AnimatePresence } from "framer-motion";
 import * as tf from "@tensorflow/tfjs";
 import React, { useState, useEffect, useRef } from "react";
@@ -4083,8 +4084,39 @@ export default function App() {
             `}</style>
 
             <div className="absolute inset-0 backdrop-blur-[60px] bg-slate-950/10" />
+            <PS5Swarm
+              opacity={0.5}
+              particleCount={1100}
+              colorVariance={1}
+              blendMode="lighter"
+              baseSize={2}
+              nearMultiplier={0.04}
+              focusMultiplier={1.13}
+              farMultiplier={0.53}
+              bokehIntensity={1.4}
+              aberrationIntensity={0.01}
+              hueShiftAmount={38}
+              gaussianBlur={0}
+              blurVariance={0.6}
+              spreadMultiplier={5}
+              timeScale={1}
+              cameraWobble={1}
+              particleSpeed={0.3}
+              tumbleSpeed={0.4}
+              sizeVariance={1.5}
+              orbitVariance={1}
+              tumbleVariance={1}
+              cohesion={0.4}
+              cohesionRadius={250}
+              turbulence={0}
+              swarmBreathing={0}
+              windY={0}
+              color1={globalMood.primary}
+              color2={globalMood.secondary}
+            />
+
             <div
-              class="grid grid-cols-2 h-full w-full items-center"
+              class="grid grid-cols-2 h-full w-full items-center z-50"
               style={{ paddingLeft: "10vw", paddingRight: "10vw" }}
             >
               <div className="z-10 flex w-full flex-col items-center text-center">
