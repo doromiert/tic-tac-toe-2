@@ -98,6 +98,8 @@ export default function App() {
   const [isMultiplayer, setIsMultiplayer] = useState(false);
   const [isHost, setIsHost] = useState(false);
   const [pendingRemoteMove, setPendingRemoteMove] = useState(null);
+  const [bestGameSnapshot, setBestGameSnapshot] = useState(null);
+  const bestScoreRef = useRef(0);
   // --- NEW FIREBASE SIGNALING STATE ---
   const [lobbyCode, setLobbyCode] = useState("");
   const [joinCodeInput, setJoinCodeInput] = useState("");
@@ -2808,6 +2810,17 @@ export default function App() {
 
         if (game.status !== "active") {
           // --- END OF GAME LOGIC & CAMPAIGN PROGRESSION ---
+          if (game.scores.X > bestScoreRef.current) {
+            bestScoreRef.current = game.scores.X;
+            setBestGameSnapshot({
+              board: game.board.map((row) => row.map((cell) => ({ ...cell }))), // Deep clone the board
+              score: game.scores.X,
+              moves: game.moves,
+              cols: cols,
+              rows: rows,
+            });
+          }
+
           if (game.status === "won") {
             const currentWinRate =
               statsRef.current.wins /
@@ -3946,6 +3959,130 @@ export default function App() {
                     </AnimatePresence>
                   </div>
                 </div>
+                {bestGameSnapshot && (
+                  <div className="mt-8 flex flex-col items-center opacity-80 mix-blend-screen pointer-events-none">
+                    <div className="text-[10px] text-cyan-300 font-mono font-bold tracking-widest uppercase mb-3 flex items-center gap-2">
+                      <span className="w-8 h-[1px] bg-cyan-500/50" />
+                      Highest Score: {bestGameSnapshot.score} (
+                      {bestGameSnapshot.moves} Moves)
+                      <span className="w-8 h-[1px] bg-cyan-500/50" />
+                    </div>
+
+                    {/* Scaled-down Board Wrapper */}
+                    <div className="scale-[0.55] origin-top border border-cyan-500/30 rounded shadow-[0_0_30px_rgba(6,182,212,0.2)] bg-slate-900/80 backdrop-blur-md p-1">
+                      <div
+                        className="grid relative"
+                        style={{
+                          gridTemplateColumns: `repeat(${bestGameSnapshot.cols}, minmax(0, 45px))`,
+                          gridTemplateRows: `repeat(${bestGameSnapshot.rows}, minmax(0, 45px))`,
+                        }}
+                      >
+                        {/* Read-Only SVG Walls */}
+                        <svg
+                          className="absolute top-0 left-0 w-full h-full pointer-events-none z-30"
+                          style={{ overflow: "visible" }}
+                        >
+                          {bestGameSnapshot.board.map((row, y) =>
+                            row.map((cell, x) => (
+                              <React.Fragment key={`wall-${x}-${y}`}>
+                                {cell.walls?.r && (
+                                  <line
+                                    x1={`${((x + 1) * 100) / bestGameSnapshot.cols}%`}
+                                    y1={`${(y * 100) / bestGameSnapshot.rows}%`}
+                                    x2={`${((x + 1) * 100) / bestGameSnapshot.cols}%`}
+                                    y2={`${((y + 1) * 100) / bestGameSnapshot.rows}%`}
+                                    stroke="#94a3b8"
+                                    strokeWidth="2"
+                                    strokeLinecap="round"
+                                  />
+                                )}
+                                {cell.walls?.b && (
+                                  <line
+                                    x1={`${(x * 100) / bestGameSnapshot.cols}%`}
+                                    y1={`${((y + 1) * 100) / bestGameSnapshot.rows}%`}
+                                    x2={`${((x + 1) * 100) / bestGameSnapshot.cols}%`}
+                                    y2={`${((y + 1) * 100) / bestGameSnapshot.rows}%`}
+                                    stroke="#94a3b8"
+                                    strokeWidth="2"
+                                    strokeLinecap="round"
+                                  />
+                                )}
+                              </React.Fragment>
+                            )),
+                          )}
+                        </svg>
+
+                        {/* Read-Only Cells */}
+                        {bestGameSnapshot.board.map((row, y) =>
+                          row.map((cell, x) => {
+                            const isVoid = cell.type === "void";
+                            return (
+                              <div
+                                key={`${y}-${x}`}
+                                className={`
+                                relative w-[45px] h-[45px] box-border
+                                ${isVoid ? "bg-transparent" : "border border-cyan-900/40 bg-slate-800/40"}
+                                ${cell.isTarget ? "bg-indigo-900/30 shadow-[inset_0_0_10px_rgba(99,102,241,0.2)]" : ""}
+                              `}
+                              >
+                                {!isVoid && (
+                                  <div
+                                    style={{
+                                      transform: ["zap", "mov", "dup"].includes(
+                                        cell.type,
+                                      )
+                                        ? `rotate(${{ u: 0, r: 90, d: 180, l: 270 }[cell.dir] || 0}deg)`
+                                        : "none",
+                                    }}
+                                    className="absolute inset-0 flex items-center justify-center p-1"
+                                  >
+                                    {/* Machine Icons */}
+                                    {(() => {
+                                      const bgIcon = getCellBgIcon(cell);
+                                      if (!bgIcon) return null;
+                                      return (
+                                        <>
+                                          <img
+                                            src={`/icons/${bgIcon}.svg`}
+                                            alt={cell.type}
+                                            className="absolute z-0 opacity-50 w-[24px] h-[24px]"
+                                          />
+                                          {cell.mechanicalLock && (
+                                            <img
+                                              src="/icons/Lock.svg"
+                                              alt="locked"
+                                              className="absolute z-20 w-[24px] h-[24px]"
+                                            />
+                                          )}
+                                          {cell.flipMod && (
+                                            <img
+                                              src="/icons/Flip.svg"
+                                              alt="flip"
+                                              className="absolute z-5 w-[24px] h-[24px]"
+                                            />
+                                          )}
+                                        </>
+                                      );
+                                    })()}
+
+                                    {/* Player Pieces (Made slightly translucent/glowing for hologram effect) */}
+                                    {cell.piece && (
+                                      <img
+                                        src={`/icons/${cell.piece === "N" ? "Neutral" : cell.piece}.svg`}
+                                        alt={cell.piece}
+                                        className={`absolute z-10 w-[32px] h-[32px] ${cell.dead ? "opacity-40 grayscale blur-[0.5px]" : "drop-shadow-[0_0_10px_rgba(34,211,238,0.8)] opacity-90 brightness-125"}`}
+                                      />
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          }),
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
