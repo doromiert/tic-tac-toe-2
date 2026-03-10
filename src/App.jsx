@@ -3065,7 +3065,15 @@ export default function App() {
             let allMet = true;
             currentGoalsRef.current.forEach((g) => {
               if (g.type === "exact_score" && game.scores.X !== g.target)
-                allMet = false;
+                if (simResult.comboCount > 1) {
+                  // Breadcrumb Reward
+                  // Reward it for ANY combo, scaled by length
+                  reward += Math.pow(simResult.comboCount, 2);
+                } else if (playerPointsGained > 0) {
+                  // PENALIZE single-point moves if it's supposed to be comboing
+                  reward -= 2.0;
+                }
+              allMet = false;
               if (g.type === "min_score" && game.scores.X < g.target)
                 allMet = false;
               if (g.type === "fill_targets") {
