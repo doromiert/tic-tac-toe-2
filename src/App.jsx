@@ -2856,10 +2856,6 @@ export default function App() {
       if (statsRef.current.recentWinRate === undefined) {
         statsRef.current.recentWinRate = 0.0;
       }
-      game.lastScoreX = 0;
-      game.lastScoreO = 0;
-      game.lastScoreT = 0;
-      game.lastScoreS = 0;
 
       gamesRef.current = Array.from({ length: parallelCount }, () => ({
         board: createEmptyBoard(cols, rows),
