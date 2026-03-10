@@ -79,6 +79,10 @@ export default function App() {
   const [globalMood, setGlobalMood] = useState("neutral"); // 'neutral', 'victory', 'defeat'
   const [minimapToggle, setMinimapToggle] = useState(true);
   const [isFlashing, setIsFlashing] = useState(false);
+  // --- CAMPAIGN STATE ---
+  const [campaignLevels, setCampaignLevels] = useState([]);
+  const [isCampaignMode, setIsCampaignMode] = useState(false);
+  const [campaignWins, setCampaignWins] = useState(0); // Tracks wins for the 10-win gate
   useEffect(() => {
     window.triggerFlash = () => {
       setIsFlashing(true);
@@ -569,31 +573,51 @@ export default function App() {
       // Fallback to WebGL if WebGPU isn't enabled in the browser
       await tf.setBackend("webgl");
     }
-    await tf.ready(); // Wait for the backend to initialize
-
-    console.log(
-      `🧠 Neural Net Initialized. Powered by: ${tf.getBackend().toUpperCase()}`,
-    );
+    await tf.ready();
 
     const model = tf.sequential();
-    // Input: Flat array of the board (cols * rows)
+
+    // INPUT: Always 81 (The 9x9 local context around a move)
     model.add(
       tf.layers.dense({
         units: 128,
-        inputShape: [cols * rows],
+        inputShape: [81],
         activation: "relu",
       }),
     );
+
     model.add(tf.layers.dense({ units: 128, activation: "relu" }));
     model.add(tf.layers.dense({ units: 64, activation: "relu" }));
-    // Output: Q-Value for every possible tile on the board
-    model.add(tf.layers.dense({ units: cols * rows, activation: "linear" }));
+
+    // OUTPUT: 1 (A single Q-value score for the center tile of that 9x9 patch)
+    model.add(tf.layers.dense({ units: 1, activation: "linear" }));
 
     model.compile({
-      optimizer: tf.train.adam(0.001, 0.9, 0.999, 1e-7),
-      loss: "meanSquaredError",
+      optimizer: tf.train.adam(0.00025), // Smoother learning rate
+      loss: "meanAbsoluteError", // Prevents the 68-billion-point explosions
     });
+
     modelRef.current = model;
+  };
+  const getLocal9x9Context = (board, targetX, targetY, player, rows, cols) => {
+    const context = new Float32Array(81);
+    let i = 0;
+
+    for (let y = targetY - 4; y <= targetY + 4; y++) {
+      for (let x = targetX - 4; x <= targetX + 4; x++) {
+        if (y < 0 || y >= rows || x < 0 || x >= cols) {
+          context[i] = -1.0;
+        } else {
+          const cell = board[y][x];
+          if (cell.piece === player) context[i] = 1.0;
+          else if (cell.piece) context[i] = -0.5;
+          else if (cell.type === "void" || cell.dead) context[i] = -1.0;
+          else context[i] = 0.0;
+        }
+        i++;
+      }
+    }
+    return context; // Returns raw memory, no GPU sync!
   };
 
   // Converts 2D board array to flat 1D tensor representation
@@ -611,111 +635,125 @@ export default function App() {
     return tf.tensor2d([flatBoard]); // Shape [1, cols*rows]
   };
 
-  // The Neural Action Chooser (Epsilon-Greedy)
-  const getNeuralMove = (boardState, validMoves) => {
-    // 1. Explore: Random move
-    if (Math.random() < epsilonRef.current) {
-      return validMoves[Math.floor(Math.random() * validMoves.length)];
+  // --- ULTRA-FAST BATCHED NEURAL MOVE ---
+  const getNeuralMove = (board, validMoves) => {
+    const numMoves = validMoves.length;
+    if (numMoves === 0) return null;
+
+    // 1. ALLOCATE ONE FLAT C++ STYLE BUFFER (Zero JS Array Overhead)
+    const batchContext = new Float32Array(numMoves * 81);
+
+    // 2. FILL THE BUFFER DIRECTLY
+    for (let i = 0; i < numMoves; i++) {
+      const move = validMoves[i];
+      let cIdx = i * 81; // Jump to the right 81-unit block for this move
+
+      for (let y = move.y - 4; y <= move.y + 4; y++) {
+        for (let x = move.x - 4; x <= move.x + 4; x++) {
+          if (y < 0 || y >= rows || x < 0 || x >= cols) {
+            batchContext[cIdx++] = -1.0; // Wall / Out of bounds
+          } else {
+            const cell = board[y][x];
+            if (cell.piece === "X") batchContext[cIdx++] = 1.0;
+            else if (cell.piece) batchContext[cIdx++] = -0.5;
+            else if (cell.type === "void" || cell.dead)
+              batchContext[cIdx++] = -1.0;
+            else batchContext[cIdx++] = 0.0;
+          }
+        }
+      }
     }
 
-    // 2. Exploit: Ask the Neural Net
-    return tf.tidy(() => {
-      const stateTensor = getBoardTensor(boardState, "X");
-      const prediction = modelRef.current.predict(stateTensor); // This stays on GPU
+    let bestMove = validMoves[0];
 
-      // 1. Create a mask of valid moves (Size of the board)
-      // We do this on the GPU so we don't have to download the raw Q-values
-      const maskValues = new Float32Array(cols * rows).fill(-1e9); // Very low value
-      validMoves.forEach((m) => {
-        maskValues[m.y * cols + m.x] = 0;
-      });
-      const maskTensor = tf.tensor1d(maskValues);
+    // 3. ONE SINGLE GPU CALL FOR ALL MOVES
+    tf.tidy(() => {
+      // Because batchContext is a Float32Array, TFJS skips the .map() loop entirely!
+      const inputTensor = tf.tensor2d(batchContext, [numMoves, 81]);
 
-      // 2. Add the mask to the predictions (Invalid moves become -Infinity)
-      const maskedPredictions = prediction.as1D().add(maskTensor);
+      // Score all moves simultaneously
+      const scores = modelRef.current.predict(inputTensor).dataSync();
 
-      // 3. Find the index of the highest Q-value on the GPU
-      const bestActionTensor = maskedPredictions.argMax();
-
-      // 4. ONLY download the final answer (a single integer)
-      const bestIndex = bestActionTensor.dataSync()[0];
-
-      // Map the flat index back to {x, y}
-      return {
-        x: bestIndex % cols,
-        y: Math.floor(bestIndex / cols),
-      };
+      // Find the highest score
+      let maxQ = -Infinity;
+      for (let i = 0; i < numMoves; i++) {
+        if (scores[i] > maxQ) {
+          maxQ = scores[i];
+          bestMove = validMoves[i];
+        }
+      }
     });
+
+    return bestMove;
   };
 
   // Train the model on a batch of memories when a game ends
-  const trainOnMemoryBatch = async (memoryBatch) => {
-    if (memoryBatch.length === 0) return;
+  const trainOnMemoryBatch = async (batch) => {
+    if (!modelRef.current || batch.length === 0) return;
 
-    // 1. Wait for a free animation frame before starting math
-    await tf.nextFrame();
+    const batchSize = batch.length;
 
-    const states = [];
-    const targets = [];
+    // 1. ALLOCATE ONE CONTIGUOUS BLOCK OF MEMORY (Zero GC overhead)
+    const stateData = new Float32Array(batchSize * 81);
+    const nextStateData = new Float32Array(batchSize * 81);
+    const targets = new Float32Array(batchSize);
 
-    tf.tidy(() => {
-      const boardSize = cols * rows;
-
-      for (let i = 0; i < memoryBatch.length; i++) {
-        const { state, actionIndex, reward, nextState, done } = memoryBatch[i];
-
-        // 1. Get current predictions for the 'now' state
-        const stateTensor = tf.tensor2d(state, [1, boardSize]);
-        const currentQ = modelRef.current.predict(stateTensor).dataSync();
-
-        // 2. Predict the 'future' value of the next state
-        const nextStateTensor = tf.tensor2d(nextState, [1, boardSize]);
-        const nextQ = modelRef.current.predict(nextStateTensor).dataSync();
-
-        // 3. Bellman Equation: update the specific action taken
-        // New Q = reward + (discount * max future Q)
-        const maxNextQ = Math.max(...nextQ);
-        const discountFactor = 0.95;
-
-        // If the game ended, there is no future value
-        const targetQ = done ? reward : reward + discountFactor * maxNextQ;
-
-        // Create a copy of current Q values and update the one action we took
-        const updatedQ = new Float32Array(currentQ);
-        updatedQ[actionIndex] = targetQ;
-
-        states.push(state);
-        targets.push(updatedQ);
-      }
-    });
-    const shape = [states.length, cols * rows];
-    const xs = tf.tensor2d(states, shape);
-    const ys = tf.tensor2d(targets, shape);
-
-    // 1. Train ONCE and capture the history
-    const h = await modelRef.current.fit(xs, ys, {
-      epochs: 1,
-      verbose: 0, // Keep this 0 so it doesn't spam your console
-      yieldEvery: "batch",
-    });
-
-    // 2. Extract the loss
-    const lossValue = h.history.loss[0];
-    if (!isNaN(lossValue)) {
-      setLatestLoss(lossValue);
-      // Keep only the last 20 values
-      setLossHistory((prev) => [...prev.slice(-19), lossValue]);
+    // 2. RAW MEMORY COPY
+    for (let i = 0; i < batchSize; i++) {
+      const memoryItem = batch[i];
+      const offset = i * 81;
+      stateData.set(memoryItem.state, offset);
+      nextStateData.set(memoryItem.nextState, offset);
     }
 
-    // 3. Clean up the VRAM AFTER we are done with the math
-    xs.dispose();
-    ys.dispose();
+    // 3. SEND RAW MEMORY DIRECTLY TO GPU
+    const xTensor = tf.tensor2d(stateData, [batchSize, 81]);
+    const nextXTensor = tf.tensor2d(nextStateData, [batchSize, 81]);
 
-    // 4. Give the UI one more frame to catch up
-    await tf.nextFrame();
+    // 4. ASYNC BELLMAN PREDICTION (No tf.tidy!)
+    const nextQPredictions = modelRef.current.predict(nextXTensor);
 
-    // 3. Give the UI one more frame to catch up
-    await tf.nextFrame();
+    // 🔥 THE MAGIC FLUIDITY FIX 🔥
+    // .data() lets the CPU continue rendering your UI while the GPU thinks!
+    const nextQs = await nextQPredictions.data();
+    nextQPredictions.dispose(); // Manually clean up the prediction tensor
+
+    // Calculate Bellman targets in standard JS
+    for (let i = 0; i < batchSize; i++) {
+      let targetQ = batch[i].reward;
+      if (!batch[i].done) {
+        targetQ += 0.95 * nextQs[i]; // 0.95 Gamma
+      }
+      targets[i] = targetQ;
+    }
+
+    const yTensor = tf.tensor2d(targets, [batchSize, 1]);
+
+    // 5. TRAIN THE BRAIN (Low-Level API, Zero Callback Overhead)
+    const lossTensor = await modelRef.current.trainOnBatch(xTensor, yTensor);
+
+    // 6. ASYNC LOSS DOWNLOAD
+    // 5. TRAIN THE BRAIN (Low-Level API)
+    // trainOnBatch returns the numerical loss directly!
+    const lossResult = await modelRef.current.trainOnBatch(xTensor, yTensor);
+
+    // 6. EXTRACT THE LOSS
+    // If you have metrics attached, TFJS returns an array [loss, metric1].
+    // If not, it just returns the number. We handle both just in case:
+    const loss = Array.isArray(lossResult) ? lossResult[0] : lossResult;
+
+    // 7. HARD VRAM CLEANUP
+    xTensor.dispose();
+    nextXTensor.dispose();
+    yTensor.dispose();
+    // (Notice we don't dispose the loss anymore, because it's just a JS number!)
+
+    // 8. UPDATE UI
+    setLatestLoss(loss);
+    setLossHistory((prev) => {
+      const updated = [...prev, loss];
+      return updated.length > 50 ? updated.slice(1) : updated;
+    });
   };
 
   const isBuildMode = appMode === "editor" && !isPlaytesting;
@@ -2422,227 +2460,104 @@ export default function App() {
   const executePureTurn = (
     startX,
     startY,
-    currentPiece,
-    currentBoard,
-    activePlayersArray,
+    player,
+    board,
+    activePlayers,
     currentScores,
   ) => {
-    // Deep clone the board so we don't accidentally mutate the previous frame
-    let b = currentBoard.map((r) => r.map((c) => ({ ...c })));
-
-    // Ensure scores are perfectly initialized to prevent NaN errors
-    let tempScores = { X: 0, O: 0, T: 0, S: 0, ...currentScores };
-    let totalLinesToErase = new Set();
-    let matchOver = false;
-
-    let q = [{ x: startX, y: startY, piece: currentPiece, overwrite: false }];
-
-    // Mirror Protocol Mode
-    if (gameMode === "mirror_protocol") {
-      let mx = cols - 1 - startX;
-      if (mx >= 0 && mx < cols) {
-        let mCell = b[startY][mx];
-        if (
-          !mCell.piece &&
-          !mCell.mechanicalLock &&
-          !["void", "locked_mech", "locked_letter"].includes(mCell.type)
-        ) {
-          q.push({ x: mx, y: startY, piece: currentPiece, overwrite: false });
-        }
-      }
-    }
-
-    // Phase 1: Placements
-    let { linesToErase: initLines } = resolvePlacements(
-      q,
-      b,
-      cols,
-      rows,
-      activePlayersArray,
-      false,
-    );
-    initLines.forEach((l) => totalLinesToErase.add(l));
-    updateSwitches(b);
-
-    // Phase 2: First Gravity
-    if (gameMode === "cascade") runGravity(b, null, false, cols, rows);
-
-    // Phase 3: Single Machine Tick
-    tickMachines(
-      b,
-      null,
-      false,
-      cols,
-      rows,
-      activePlayersArray,
-      totalLinesToErase,
-    );
-    updateSwitches(b);
-
-    // Phase 4: Final Gravity
-    if (gameMode === "cascade") runGravity(b, null, false, cols, rows);
-
-    // Phase 5: Point Deductions for erased lines
-    if (totalLinesToErase.size > 0) {
-      totalLinesToErase.forEach((id) => {
-        let owner = null;
-        b.forEach((row) =>
-          row.forEach((c) => {
-            if (c.lineId === id) {
-              owner = c.piece;
-              c.dead = false;
-              c.lineId = null;
-            }
-          }),
-        );
-        if (owner && tempScores[owner] !== undefined) tempScores[owner]--;
-      });
-    }
-
-    let earnedExtraTurns = 0;
-    let linesFound = [];
-
-    // --- ISOLATED CHECKLINE LOGIC ---
-    const checkLine = (sx, sy, dx, dy) => {
-      let run = [];
-      let cx = sx,
-        cy = sy;
-
-      const scoreRun = () => {
-        // MUST use activePlayersArray here, not global activePlayers
-        activePlayersArray.forEach((player) => {
-          let currentSeq = [];
-          run.forEach((item) => {
-            let p = item.cell.piece;
-            let isDead = item.cell.dead;
-            let isWild = item.cell.type === "neutral";
-            if (!isDead && (p === player || isWild)) {
-              currentSeq.push(item);
-            } else {
-              evalSeq(currentSeq, player);
-              currentSeq = [];
-            }
-          });
-          evalSeq(currentSeq, player);
-        });
-      };
-
-      const evalSeq = (seq, player) => {
-        let firstIdx = seq.findIndex((i) => i.cell.piece === player);
-        let lastIdx = seq.findLastIndex((i) => i.cell.piece === player);
-        if (firstIdx !== -1 && lastIdx !== -1 && lastIdx - firstIdx + 1 >= 3) {
-          linesFound.push({ player, seq: seq.slice(firstIdx, lastIdx + 1) });
-        }
-      };
-
-      while (cx >= 0 && cx < cols && cy >= 0 && cy < rows) {
-        let cell = b[cy][cx];
-        if (cell.type === "void") {
-          scoreRun();
-          run = [];
-          cx += dx;
-          cy += dy;
-          continue;
-        }
-
-        let nextX = cx + dx,
-          nextY = cy + dy;
-        let blocked = false;
-
-        if (nextX >= 0 && nextX < cols && nextY >= 0 && nextY < rows) {
-          if (dx === 1 && dy === 0 && cell.walls.r) blocked = true;
-          if (dx === 0 && dy === 1 && cell.walls.b) blocked = true;
-          if (dx === 1 && dy === 1 && b[cy]?.[nextX]?.walls?.bl) blocked = true;
-          if (dx === -1 && dy === 1 && b[cy]?.[nextX]?.walls?.br)
-            blocked = true;
-        } else {
-          blocked = true;
-        }
-
-        run.push({ x: cx, y: cy, cell });
-        if (blocked) {
-          scoreRun();
-          run = [];
-        }
-        cx = nextX;
-        cy = nextY;
-      }
-      if (run.length > 0) scoreRun();
-    };
-
-    // Run scans
-    for (let y = 0; y < rows; y++) checkLine(0, y, 1, 0);
-    for (let x = 0; x < cols; x++) checkLine(x, 0, 0, 1);
-    for (let y = 0; y < rows; y++) checkLine(0, y, 1, 1);
-    for (let x = 1; x < cols; x++) checkLine(x, 0, 1, 1);
-    for (let y = 0; y < rows; y++) checkLine(cols - 1, y, -1, 1);
-    for (let x = 0; x < cols - 1; x++) checkLine(x, 0, -1, 1);
+    // 1. MUTATE IN-PLACE (Kills the 54ms .map() deep-clone lag)
+    board[startY][startX].piece = player;
 
     let pointsScoredThisTurn = 0;
+    let earnedExtraTurns = 0;
 
-    // --- ISOLATED SCORING ---
-    linesFound.forEach((line) => {
-      const lId = Math.random().toString(36).substr(2, 9); // Quick isolated ID
-      let lineScore = 1;
+    // 2. THE RADIAL SCAN (Kills the 290ms checkLine & evaluateSeq lag)
+    // We only check the 4 axes crossing the exact piece we just placed.
+    const axes = [
+      [
+        { dx: 1, dy: 0 },
+        { dx: -1, dy: 0 },
+      ], // Horizontal
+      [
+        { dx: 0, dy: 1 },
+        { dx: 0, dy: -1 },
+      ], // Vertical
+      [
+        { dx: 1, dy: 1 },
+        { dx: -1, dy: -1 },
+      ], // Diagonal Down
+      [
+        { dx: 1, dy: -1 },
+        { dx: -1, dy: 1 },
+      ], // Diagonal Up
+    ];
 
-      if (gameMode === "zone_control") {
-        lineScore = 0;
-        line.seq.forEach((item) => {
-          if (b[item.y][item.x].isTarget) lineScore++;
+    axes.forEach((axis) => {
+      let lineLength = 1; // The piece we just placed
+      let seq = [{ x: startX, y: startY }];
+
+      axis.forEach((dir) => {
+        let cx = startX + dir.dx;
+        let cy = startY + dir.dy;
+
+        // Raycast outwards until we hit an empty space, enemy, or wall
+        while (cx >= 0 && cx < cols && cy >= 0 && cy < rows) {
+          let cell = board[cy][cx];
+          // Stop if it's dead, enemy, or void
+          if (
+            cell.dead ||
+            cell.type === "void" ||
+            (!cell.piece && cell.type !== "neutral")
+          )
+            break;
+          if (cell.piece !== player && cell.type !== "neutral") break;
+
+          lineLength++;
+          seq.push({ x: cx, y: cy });
+          cx += dir.dx;
+          cy += dir.dy;
+        }
+      });
+
+      if (lineLength >= 3) {
+        pointsScoredThisTurn += 1;
+        let longLineBonus = Math.max(0, lineLength - 3);
+        earnedExtraTurns += longLineBonus;
+
+        // Mark the pieces as dead so they can't be reused
+        seq.forEach((pos) => {
+          if (board[pos.y][pos.x].type !== "neutral") {
+            board[pos.y][pos.x].dead = true;
+          }
         });
       }
-
-      // Update local score tracker
-      if (tempScores[line.player] !== undefined) {
-        tempScores[line.player] += lineScore;
-      }
-
-      if (line.player === currentPiece) {
-        pointsScoredThisTurn++;
-        let longLineBonus = Math.max(0, line.seq.length - 3);
-        earnedExtraTurns += longLineBonus;
-      }
-
-      line.seq.forEach((item) => {
-        if (b[item.y][item.x].type !== "neutral") b[item.y][item.x].dead = true;
-        b[item.y][item.x].lineId = lId;
-      });
     });
 
-    if (pointsScoredThisTurn > 1) earnedExtraTurns += pointsScoredThisTurn - 1;
-
-    // --- CHECK FULL BOARD (DRAW/END CONDITION) ---
-    let isFull = true;
-    for (let y = 0; y < rows; y++) {
-      for (let x = 0; x < cols; x++) {
-        const c = b[y][x];
-        if (c.type === "void") continue;
-        if (!c.piece) {
-          if (
-            [
-              "empty",
-              "zap",
-              "mov",
-              "rot_cw",
-              "rot_ccw",
-              "flip",
-              "switch",
-            ].includes(c.type)
-          )
-            isFull = false;
-          if (c.type === "locked_letter" && c.unlocked) isFull = false;
-        }
-      }
+    // Multiline Bonus
+    if (pointsScoredThisTurn > 1) {
+      earnedExtraTurns += pointsScoredThisTurn - 1;
     }
 
-    if (isFull) matchOver = true;
+    currentScores[player] += pointsScoredThisTurn;
 
-    // Return the newly calculated state without ever touching React
+    // 3. FAST MATCH-OVER CHECK
+    let matchOver = true;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        let cell = board[r][c];
+        if (!cell.piece && cell.type !== "void" && !cell.mechanicalLock) {
+          matchOver = false;
+          break; // Break inner
+        }
+      }
+      if (!matchOver) break; // Break outer
+    }
+
     return {
-      board: b,
-      scores: tempScores,
-      extraTurns: earnedExtraTurns,
+      board: board, // Returned mutated
+      scores: currentScores,
       matchOver: matchOver,
+      extraTurns: earnedExtraTurns,
     };
   };
 
@@ -2800,26 +2715,41 @@ export default function App() {
   };
   const isCurrentlyFitting = useRef(false);
 
+  // Add these near your other refs
+  const campaignStateRef = useRef({
+    isActive: false,
+    levels: [],
+    currentIndex: 0,
+    wins: 0,
+  });
+  const currentGoalsRef = useRef([{ type: "standard", target: 0 }]);
+
+  // Sync them whenever the state changes
+  useEffect(() => {
+    campaignStateRef.current = {
+      isActive: isCampaignMode,
+      levels: campaignLevels,
+      currentIndex: campaignIndex,
+      wins: campaignWins,
+    };
+  }, [isCampaignMode, campaignLevels, campaignIndex, campaignWins]);
+
+  useEffect(() => {
+    currentGoalsRef.current = currentGoals;
+  }, [currentGoals]);
   useEffect(() => {
     // --- FAST RANDOM SAMPLER ---
     const sampleBatch = (buffer, batchSize) => {
       const currentSize = buffer.length;
-
-      // If we don't have enough memories yet, just return what we have
-      if (currentSize <= batchSize) {
-        return [...buffer];
-      }
-
+      if (currentSize <= batchSize) return [...buffer];
       const batch = new Array(batchSize);
-
-      // Fast random sampling (with replacement for maximum speed)
       for (let i = 0; i < batchSize; i++) {
         const randomIndex = Math.floor(Math.random() * currentSize);
         batch[i] = buffer[randomIndex];
       }
-
       return batch;
     };
+
     if (appMode !== "neural_training") {
       isTraining.current = false;
       cancelAnimationFrame(trainingLoopId.current);
@@ -2827,14 +2757,10 @@ export default function App() {
       return;
     }
 
-    // Wrap the startup sequence in an async IIFE
     const startTraining = async () => {
-      if (!modelRef.current) {
-        await initializeModel(); // Wait for GPU to wake up
-      }
+      if (!modelRef.current) await initializeModel();
       isTraining.current = true;
 
-      // Populate initial gamesRef
       gamesRef.current = Array.from({ length: parallelCount }, () => ({
         board: createEmptyBoard(cols, rows),
         turn: "X",
@@ -2842,31 +2768,23 @@ export default function App() {
         moves: 0,
         memory: [],
         lastScore: 0,
+        scores: { X: 0, O: 0, T: 0, S: 0 },
       }));
 
-      // Start engine
       runSimulationStep();
     };
 
-    // --- HELPER: ZERO-ALLOCATION RESET ---
-    // Put this right above runSimulationStep
     const resetGameInPlace = (game) => {
-      // 1. Wipe the board mutably (No new arrays created!)
       for (let y = 0; y < rows; y++) {
         for (let x = 0; x < cols; x++) {
           game.board[y][x].piece = null;
           game.board[y][x].dead = false;
-          // (If your createEmptyBoard sets other defaults like type: 'normal', reset them here too)
         }
       }
-
-      // 2. Reset Primitives
       game.turn = "X";
       game.status = "active";
       game.moves = 0;
       game.lastScore = 0;
-
-      // 3. Keep the scores object, just zero it
       if (!game.scores) game.scores = { X: 0, O: 0, T: 0, S: 0 };
       else {
         game.scores.X = 0;
@@ -2874,20 +2792,22 @@ export default function App() {
         game.scores.T = 0;
         game.scores.S = 0;
       }
-
-      // 4. Empty the memory array WITHOUT destroying it
       game.memory.length = 0;
     };
 
-    // --- FAST MATH LOOP ---
+    // --- THE ULTIMATE MATH LOOP (GLOBAL INFERENCE BATCHING) ---
     const runSimulationStep = async () => {
       if (!isTraining.current) return;
 
+      const activeNeuralTasks = [];
+      let totalNeuralMoves = 0;
+
+      // 1. QUEUE PHASE: Check statuses and collect moves
       for (let i = 0; i < parallelCount; i++) {
         let game = gamesRef.current[i];
 
         if (game.status !== "active") {
-          // --- ADAPTIVE EPSILON LOGIC ---
+          // --- END OF GAME LOGIC & CAMPAIGN PROGRESSION ---
           if (game.status === "won") {
             const currentWinRate =
               statsRef.current.wins /
@@ -2901,6 +2821,35 @@ export default function App() {
               epsilonRef.current * 0.9,
             );
             statsRef.current.wins++;
+
+            const cState = campaignStateRef.current;
+            if (cState.isActive) {
+              const newWins = cState.wins + 1;
+              if (newWins >= 10) {
+                const nextIdx = cState.currentIndex + 1;
+                console.log(
+                  `🧠 Campaign Level ${cState.currentIndex + 1} Mastered!`,
+                );
+                if (nextIdx < cState.levels.length) {
+                  const nextLvl = cState.levels[nextIdx];
+                  setCampaignIndex(nextIdx);
+                  setCampaignWins(0);
+                  setGameMode(nextLvl.gameMode || "standard");
+                  setCurrentGoals(
+                    nextLvl.goals || [{ type: "standard", target: 0 }],
+                  );
+                  setAiBehavior(nextLvl.aiBehavior || "standard");
+                  setCols(nextLvl.cols || 9);
+                  setRows(nextLvl.rows || 9);
+                  globalReplayBuffer.current.length = 0;
+                } else {
+                  console.log("🏆 CAMPAIGN COMPLETE!");
+                  setIsCampaignMode(false);
+                }
+              } else {
+                setCampaignWins(newWins);
+              }
+            }
           } else if (game.status === "lost") {
             epsilonRef.current = Math.min(0.4, epsilonRef.current + 0.02);
             statsRef.current.losses++;
@@ -2912,13 +2861,10 @@ export default function App() {
             statsRef.current.draws++;
           }
 
-          // DUMP MEMORY TO GLOBAL BUFFER
-          // We use a manual loop instead of ...spread to avoid Call Stack explosion & allocation
+          // Dump memory & Train
           for (let m = 0; m < game.memory.length; m++) {
             globalReplayBuffer.current.push(game.memory[m]);
           }
-
-          // CHOP BUFFER IF IT OVERFLOWS (This is still a slight GC hit, but acceptable for now)
           if (globalReplayBuffer.current.length > maxMemoryEntries) {
             globalReplayBuffer.current.splice(
               0,
@@ -2926,10 +2872,8 @@ export default function App() {
             );
           }
 
-          // IN-PLACE RESET (Kills the double-reset GC leak!)
           resetGameInPlace(game);
 
-          // ONLY train if we aren't already training
           if (!isCurrentlyFitting.current) {
             isCurrentlyFitting.current = true;
             setTimeout(async () => {
@@ -2938,22 +2882,16 @@ export default function App() {
               isCurrentlyFitting.current = false;
             }, 10);
           }
-
           setTrainingEpoch((e) => e + 1);
-          continue; // Skip the rest of the loop for this game
+          continue;
         }
 
-        // --- GAMEPLAY LOGIC ---
-
-        // Get valid moves (Pre-allocate to avoid GC if possible, but keeping it simple here)
+        // --- GET VALID MOVES ---
         let validMoves = [];
         for (let y = 0; y < rows; y++) {
           for (let x = 0; x < cols; x++) {
-            if (
-              !game.board[y][x].piece &&
-              !game.board[y][x].dead &&
-              game.board[y][x].type !== "void"
-            ) {
+            const cell = game.board[y][x];
+            if (!cell.piece && !cell.dead && cell.type !== "void") {
               validMoves.push({ x, y });
             }
           }
@@ -2964,77 +2902,17 @@ export default function App() {
           continue;
         }
 
-        let move;
         if (game.turn === "X") {
-          // NEURAL BOT TURN
-          const flatStateBefore = tf.tidy(() =>
-            getBoardTensor(game.board, "X").dataSync(),
-          );
-          move = getNeuralMove(game.board, validMoves);
-
-          const simResult = executePureTurn(
-            move.x,
-            move.y,
-            "X",
-            game.board,
-            trainingPlayers,
-            game.scores || { X: 0, O: 0, T: 0, S: 0 },
-          );
-          game.board = simResult.board;
-          game.scores = simResult.scores;
-
-          // --- BALANCED REWARD ENGINE ---
-          let reward = 0.1;
-          const pointsGained = game.scores.X - (game.lastScore || 0);
-          if (pointsGained > 0) reward += pointsGained * 2.0;
-          if (simResult.extraTurns > 0)
-            reward += Math.pow(simResult.extraTurns, 2) * 3.0;
-
-          game.lastScore = game.scores.X;
-
-          if (simResult.matchOver) {
-            let enemyMax = Math.max(
-              game.scores.O || 0,
-              game.scores.T || 0,
-              game.scores.S || 0,
-            );
-            if (game.scores.X > enemyMax) {
-              game.status = "won";
-              reward += 50.0;
-            } else if (game.scores.X < enemyMax) {
-              game.status = "lost";
-              reward -= 30.0;
-            } else {
-              game.status = "draw";
-              reward += 5.0;
-            }
-          }
-
-          const flatStateAfter = tf.tidy(() =>
-            getBoardTensor(game.board, "X").dataSync(),
-          );
-
-          // SAVE MEMORY (Zero-Conversion)
-          // Removing Array.from() keeps these as Float32Arrays.
-          // TensorFlow loves Float32Arrays. JS Arrays cause massive GC bloat.
-          game.memory.push({
-            state: flatStateBefore,
-            actionIndex: move.y * cols + move.x,
-            reward: Math.max(-5, Math.min(5, reward)),
-            nextState: flatStateAfter,
-            done: game.status !== "active",
+          // Add to GPU queue
+          activeNeuralTasks.push({
+            game,
+            validMoves,
+            startIndex: totalNeuralMoves,
           });
-
-          if (simResult.extraTurns > 0) {
-            game.moves++;
-          } else {
-            const currIdx = trainingPlayers.indexOf(game.turn);
-            game.turn = trainingPlayers[(currIdx + 1) % trainingPlayers.length];
-            game.moves++;
-          }
+          totalNeuralMoves += validMoves.length;
         } else {
-          // PROCEDURAL BOT TURN
-          move = getProceduralMove(
+          // --- PROCEDURAL BOT TURN ---
+          const move = getProceduralMove(
             game.board,
             game.turn,
             rows,
@@ -3051,7 +2929,7 @@ export default function App() {
               game.turn,
               game.board,
               trainingPlayers,
-              game.scores || { X: 0, O: 0, T: 0, S: 0 },
+              game.scores,
             );
             game.board = simResult.board;
             game.scores = simResult.scores;
@@ -3066,7 +2944,6 @@ export default function App() {
               else if (game.scores.X < enemyMax) game.status = "lost";
               else game.status = "draw";
             }
-
             if (simResult.extraTurns === 0) {
               const currIdx = trainingPlayers.indexOf(game.turn);
               game.turn =
@@ -3079,70 +2956,206 @@ export default function App() {
         }
       }
 
-      // Sync via rAF natively
+      // 2. STRIKE PHASE: One massive GPU prediction for ALL neural moves
+      if (totalNeuralMoves > 0) {
+        const globalContext = new Float32Array(totalNeuralMoves * 81);
+        let ptr = 0;
+
+        // Build the giant batch buffer
+        for (let t = 0; t < activeNeuralTasks.length; t++) {
+          const task = activeNeuralTasks[t];
+          const board = task.game.board;
+
+          for (let m = 0; m < task.validMoves.length; m++) {
+            const move = task.validMoves[m];
+            for (let y = move.y - 4; y <= move.y + 4; y++) {
+              for (let x = move.x - 4; x <= move.x + 4; x++) {
+                if (y < 0 || y >= rows || x < 0 || x >= cols)
+                  globalContext[ptr++] = -1.0;
+                else {
+                  const cell = board[y][x];
+                  if (cell.piece === "X") globalContext[ptr++] = 1.0;
+                  else if (cell.piece) globalContext[ptr++] = -0.5;
+                  else if (cell.type === "void" || cell.dead)
+                    globalContext[ptr++] = -1.0;
+                  else globalContext[ptr++] = 0.0;
+                }
+              }
+            }
+          }
+        }
+
+        // The single GPU sync for the entire frame
+        let globalScores;
+        tf.tidy(() => {
+          const inputTensor = tf.tensor2d(globalContext, [
+            totalNeuralMoves,
+            81,
+          ]);
+          globalScores = modelRef.current.predict(inputTensor).dataSync();
+        });
+
+        // Resolve all tasks
+        for (let t = 0; t < activeNeuralTasks.length; t++) {
+          const task = activeNeuralTasks[t];
+          let bestMove = task.validMoves[0];
+          let maxQ = -Infinity;
+
+          for (let m = 0; m < task.validMoves.length; m++) {
+            let score = globalScores[task.startIndex + m];
+            if (score > maxQ) {
+              maxQ = score;
+              bestMove = task.validMoves[m];
+            }
+          }
+
+          let game = task.game;
+
+          // Capture Pre-State
+          const patchBefore = getLocal9x9Context(
+            game.board,
+            bestMove.x,
+            bestMove.y,
+            "X",
+            rows,
+            cols,
+          );
+
+          // Execute
+          const simResult = executePureTurn(
+            bestMove.x,
+            bestMove.y,
+            "X",
+            game.board,
+            trainingPlayers,
+            game.scores,
+          );
+          game.board = simResult.board;
+          game.scores = simResult.scores;
+
+          // Reward Math & Goal Evaluation
+          let reward = 0.1;
+          const pointsGained = game.scores.X - (game.lastScore || 0);
+          if (pointsGained > 0) reward += pointsGained * 2.0;
+          if (simResult.extraTurns > 0)
+            reward += Math.pow(simResult.extraTurns, 2) * 3.0;
+
+          game.lastScore = game.scores.X;
+
+          if (simResult.matchOver) {
+            let anyFailed = false;
+            let enemyMax = Math.max(
+              game.scores.O || 0,
+              game.scores.T || 0,
+              game.scores.S || 0,
+            );
+
+            currentGoalsRef.current.forEach((g) => {
+              if (g.type === "standard" && game.scores.X <= enemyMax)
+                anyFailed = true;
+              else if (g.type === "exact_score" && game.scores.X !== g.target)
+                anyFailed = true;
+              else if (g.type === "min_score" && game.scores.X < g.target)
+                anyFailed = true;
+              else if (g.type === "max_score" && game.scores.X > g.target)
+                anyFailed = true;
+              else if (g.type === "max_moves" && game.moves > g.target)
+                anyFailed = true;
+            });
+
+            if (anyFailed) {
+              game.status = "lost";
+              reward -= 30.0;
+            } else {
+              game.status = "won";
+              reward += 50.0;
+            }
+          }
+
+          const clampedReward = Math.max(-1.0, Math.min(1.0, reward));
+          const patchAfter = getLocal9x9Context(
+            game.board,
+            bestMove.x,
+            bestMove.y,
+            "X",
+            rows,
+            cols,
+          );
+
+          game.memory.push({
+            state: patchBefore,
+            nextState: patchAfter,
+            reward: clampedReward,
+            done: game.status !== "active",
+          });
+
+          if (simResult.extraTurns > 0) game.moves++;
+          else {
+            const currIdx = trainingPlayers.indexOf(game.turn);
+            game.turn = trainingPlayers[(currIdx + 1) % trainingPlayers.length];
+            game.moves++;
+          }
+        }
+      }
+
+      // Loop continues natively
       trainingLoopId.current = requestAnimationFrame(runSimulationStep);
     };
 
+    // --- UI SYNC INTERVAL ---
     uiSyncIntervalId.current = setInterval(() => {
-      const recentGames = gamesRef.current;
-
       const lerpColor = (rgba1, rgba2, factor) => {
         const parse = (s) => s.match(/\d+(\.\d+)?/g).map(Number);
         const [r1, g1, b1, a1] = parse(rgba1);
         const [r2, g2, b2, a2] = parse(rgba2);
-        const r = Math.round(r1 + (r2 - r1) * factor);
-        const g = Math.round(g1 + (g2 - g1) * factor);
-        const b = Math.round(b1 + (b2 - b1) * factor);
-        const a = a1 + (a2 - a1) * factor;
-        return `rgba(${r}, ${g}, ${b}, ${a})`;
+        return `rgba(${Math.round(r1 + (r2 - r1) * factor)}, ${Math.round(g1 + (g2 - g1) * factor)}, ${Math.round(b1 + (b2 - b1) * factor)}, ${a1 + (a2 - a1) * factor})`;
       };
 
-      // Inside your UI Sync Loop (setInterval):
-      const total = trainingStats.wins + trainingStats.losses;
-      const winRate = total > 0 ? trainingStats.wins / total : 0;
-
-      // Normalize win rate: 0% is pure Rose, 15%+ is pure Cyan
+      const total = statsRef.current.wins + statsRef.current.losses;
+      const winRate = total > 0 ? statsRef.current.wins / total : 0;
       const moodFactor = Math.min(winRate / 0.15, 1);
 
-      const STRUGGLE_COLOR = "rgba(244, 63, 94, 0.3)"; // Rose
-      const SUCCESS_COLOR = "rgba(6, 182, 212, 0.3)"; // Cyan
-
       setGlobalMood({
-        primary: lerpColor(STRUGGLE_COLOR, SUCCESS_COLOR, moodFactor),
+        primary: lerpColor(
+          "rgba(244, 63, 94, 0.3)",
+          "rgba(6, 182, 212, 0.3)",
+          moodFactor,
+        ),
         secondary: lerpColor(
           "rgba(251, 146, 60, 0.2)",
           "rgba(16, 185, 129, 0.2)",
           moodFactor,
         ),
       });
+
       if (isTraining.current) {
         const mem = tf.memory();
-        setVramUsage({
-          bytes: mem.numBytes,
-          tensors: mem.numTensors,
-        });
+        setVramUsage({ bytes: mem.numBytes, tensors: mem.numTensors });
 
         if (minimapToggle) {
-          // FULL RENDER MODE: Calculate heatmaps and sync all boards
-          const updatedBoards = gamesRef.current.map((g, idx) => {
-            const heatmap = idx < 8 ? getBoardHeatmap(g.board) : null;
-            return { ...g, heatmap };
-          });
-          setTrainingBoards(updatedBoards);
-        } else {
-          // TURBO MODE: Only sync the global stats, skip the heavy board mapping
-          // This saves a massive amount of CPU/Memory work every 66ms
+          // Wrap in an async IIFE so we don't block the interval timer
+          (async () => {
+            const updatedBoards = await Promise.all(
+              gamesRef.current.map(async (g, idx) => {
+                // Only spend GPU time rendering the boards the user can actually see
+                const heatmap =
+                  idx < 8 ? await getBoardHeatmapAsync(g.board) : null;
+                return { ...g, heatmap };
+              }),
+            );
+
+            // Only update the state if we didn't cancel training while waiting
+            if (isTraining.current) {
+              setTrainingBoards(updatedBoards);
+            }
+          })();
         }
 
-        // Always sync the stats so the scoreboard keeps ticking
-        setTrainingStats({
-          ...statsRef.current,
-          epsilon: epsilonRef.current,
-        });
+        setTrainingStats({ ...statsRef.current, epsilon: epsilonRef.current });
       }
     }, 1000 / 15);
 
-    startTraining(); // Fire it up
+    startTraining();
 
     return () => {
       isTraining.current = false;
@@ -3151,17 +3164,73 @@ export default function App() {
     };
   }, [appMode, parallelCount, cols, rows]);
 
-  const getBoardHeatmap = (boardState) => {
-    return tf.tidy(() => {
-      if (!modelRef.current) return null;
-      const stateTensor = getBoardTensor(boardState, "X");
-      const qValues = modelRef.current.predict(stateTensor).dataSync();
+  // --- BATCHED ASYNC HEATMAP (ZERO UI LAG) ---
+  const getBoardHeatmapAsync = async (board) => {
+    const validCells = [];
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const cell = board[y][x];
+        if (!cell.piece && !cell.dead && cell.type !== "void") {
+          validCells.push({ x, y, idx: y * cols + x });
+        }
+      }
+    }
 
-      // Normalize values between 0 and 1 for CSS opacity/color
-      const min = Math.min(...qValues);
-      const max = Math.max(...qValues);
-      return Array.from(qValues).map((v) => (v - min) / (max - min || 1));
-    });
+    const numCells = validCells.length;
+    if (numCells === 0) return new Float32Array(cols * rows).fill(0);
+
+    // 1. ONE ALLOCATION (Inlining the loops for raw speed)
+    const batchContext = new Float32Array(numCells * 81);
+    let ptr = 0;
+
+    for (let i = 0; i < numCells; i++) {
+      const { x: targetX, y: targetY } = validCells[i];
+
+      for (let cy = targetY - 4; cy <= targetY + 4; cy++) {
+        for (let cx = targetX - 4; cx <= targetX + 4; cx++) {
+          if (cy < 0 || cy >= rows || cx < 0 || cx >= cols) {
+            batchContext[ptr++] = -1.0;
+          } else {
+            const c = board[cy][cx];
+            if (c.piece === "X") batchContext[ptr++] = 1.0;
+            else if (c.piece) batchContext[ptr++] = -0.5;
+            else if (c.type === "void" || c.dead) batchContext[ptr++] = -1.0;
+            else batchContext[ptr++] = 0.0;
+          }
+        }
+      }
+    }
+
+    // 2. ASYNC GPU PREDICTION (No dataSync!)
+    const inputTensor = tf.tensor2d(batchContext, [numCells, 81]);
+    const predictions = modelRef.current.predict(inputTensor);
+
+    // Yield the thread so CSS animations and UI interactions stay smooth
+    const scores = await predictions.data();
+
+    inputTensor.dispose();
+    predictions.dispose();
+
+    // 3. NORMALIZE SCORES
+    const heatmap = new Float32Array(cols * rows).fill(0);
+    let minScore = Infinity;
+    let maxScore = -Infinity;
+
+    for (let i = 0; i < numCells; i++) {
+      const score = scores[i];
+      heatmap[validCells[i].idx] = score;
+      if (score < minScore) minScore = score;
+      if (score > maxScore) maxScore = score;
+    }
+
+    if (maxScore > minScore) {
+      for (let i = 0; i < numCells; i++) {
+        const idx = validCells[i].idx;
+        heatmap[idx] = (heatmap[idx] - minScore) / (maxScore - minScore);
+      }
+    }
+
+    return heatmap;
   };
 
   // --- RENDERERS ---
@@ -3248,37 +3317,117 @@ export default function App() {
           </div>
           <div className="mt-2">
             <label className="text-xs text-slate-400 font-bold block mb-1">
-              TRAINING ENVIRONMENT (LEVEL)
+              TRAINING ENVIRONMENT
             </label>
-            <label className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded border border-slate-700 text-center cursor-pointer transition-colors block text-xs tracking-widest uppercase">
-              📁 IMPORT LEVEL JSON
-              <input
-                type="file"
-                accept=".json"
-                className="hidden"
-                onChange={(e) =>
-                  handleLevelImport(e, (d) => {
-                    console.log("Loaded training level data:", d);
-                    setGameMode(d.gameMode || "standard");
-                    setCols(d.cols || d.gridSize || 9);
-                    setRows(d.rows || d.gridSize || 9);
-                    setBoard(
-                      levelData.board.map((row) =>
-                        row.map((cell) => ({ ...cell })),
-                      ),
-                    );
-                    setCurrentGoals(
-                      d.goals ||
-                        (d.goal ? [d.goal] : [{ type: "standard", target: 0 }]),
-                    );
-                    setAiBehavior(d.aiBehavior || "standard");
-                    alert(
-                      `Environment loaded: ${d.cols || d.gridSize || 9}x${d.rows || d.gridSize || 9} ${d.gameMode || "standard"}`,
-                    );
-                  })
-                }
-              />
-            </label>
+            <div className="flex gap-4">
+              <label className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded border border-slate-700 text-center cursor-pointer transition-colors block text-xs tracking-widest uppercase">
+                IMPORT LEVEL
+                <input
+                  type="file"
+                  accept=".json"
+                  className="hidden"
+                  onChange={(e) =>
+                    handleLevelImport(e, (d) => {
+                      console.log("Loaded training level data:", d);
+                      setGameMode(d.gameMode || "standard");
+                      setCols(d.cols || d.gridSize || 9);
+                      setRows(d.rows || d.gridSize || 9);
+                      setBoard(
+                        levelData.board.map((row) =>
+                          row.map((cell) => ({ ...cell })),
+                        ),
+                      );
+                      setCurrentGoals(
+                        d.goals ||
+                          (d.goal
+                            ? [d.goal]
+                            : [{ type: "standard", target: 0 }]),
+                      );
+                      setAiBehavior(d.aiBehavior || "standard");
+                      alert(
+                        `Environment loaded: ${d.cols || d.gridSize || 9}x${d.rows || d.gridSize || 9} ${d.gameMode || "standard"}`,
+                      );
+                    })
+                  }
+                />
+              </label>
+              <label className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded border border-slate-700 text-center cursor-pointer transition-colors block text-xs tracking-widest uppercase">
+                IMPORT CAMPAIGN
+                <input
+                  type="file"
+                  accept=".json"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files[0];
+                    if (!file) return;
+
+                    const reader = new FileReader();
+                    reader.onload = (event) => {
+                      try {
+                        const campaignData = JSON.parse(event.target.result);
+                        const name = file.name.replace(/\.[^/.]+$/, "");
+
+                        if (!Array.isArray(campaignData)) {
+                          throw new Error("Invalid campaign format");
+                        }
+
+                        // 1. YOUR EXISTING LOGIC: Save it to the app's library
+                        const updatedCampaigns = [
+                          ...savedCampaigns,
+                          { id: generateId(), name, levels: campaignData },
+                        ];
+                        setSavedCampaigns(updatedCampaigns);
+                        localStorage.setItem(
+                          "t3_campaigns",
+                          JSON.stringify(updatedCampaigns),
+                        );
+
+                        // 2. THE AI HOOKUP: Load Level 1 into the Neural Environment
+                        setCampaignLevels(campaignData); // Save the array to state so the AI can progress
+                        setCampaignIndex(0);
+                        setIsCampaignMode(true);
+                        setCampaignWins(0);
+
+                        const firstLevel = campaignData[0];
+                        setGameMode(firstLevel.gameMode || "standard");
+                        setCols(firstLevel.cols || firstLevel.gridSize || 9);
+                        setRows(firstLevel.rows || firstLevel.gridSize || 9);
+
+                        // Load the board state of Level 1
+                        if (firstLevel.board) {
+                          setBoard(
+                            firstLevel.board.map((row) =>
+                              row.map((cell) => ({ ...cell })),
+                            ),
+                          );
+                        } else {
+                          setBoard(
+                            createEmptyBoard(firstLevel.cols, firstLevel.rows),
+                          );
+                        }
+
+                        setCurrentGoals(
+                          firstLevel.goals ||
+                            (firstLevel.goal
+                              ? [firstLevel.goal]
+                              : [{ type: "standard", target: 0 }]),
+                        );
+                        setAiBehavior(firstLevel.aiBehavior || "standard");
+
+                        alert(
+                          `Training Campaign [${name}] loaded!\nLevel 1 queued for the Neural Network.`,
+                        );
+                      } catch (err) {
+                        alert("Invalid campaign JSON file.");
+                        console.error(err);
+                      }
+                    };
+                    reader.readAsText(file);
+                    e.target.value = ""; // Reset input
+                  }}
+                />
+              </label>
+            </div>
           </div>
           <div>
             <label className="text-xs text-slate-400 font-bold block mb-1">
@@ -3356,16 +3505,34 @@ export default function App() {
         }}
       >
         {/* HEADER */}
-        <div className="flex justify-between items-center border-b border-slate-800 pb-4 mb-4">
-          <div>
+        <div className="flex justify-between items-start border-b border-slate-800 pb-4 mb-4">
+          <div className="flex-1">
             <h1 className="text-2xl font-black text-fuchsia-400">
               NEURAL TRAINING ACTIVE
             </h1>
-            <p className="font-mono text-xs text-slate-400">
+            <p className="font-mono text-xs text-slate-400 mb-2">
               EPOCH: {trainingEpoch} | PARALLEL INSTANCES: {parallelCount}
+              {isCampaignMode && ` | CAMPAIGN LEVEL: ${campaignIndex + 1}`}
             </p>
+
+            {/* --- CAMPAIGN PROGRESS BAR --- */}
+            {isCampaignMode && (
+              <div className="w-full max-w-md mb-3">
+                <div className="flex justify-between text-[9px] text-fuchsia-400 font-bold tracking-widest uppercase mb-1">
+                  <span>Level Mastery Tracker</span>
+                  <span>{campaignWins} / 10 WINS</span>
+                </div>
+                <div className="h-1.5 w-full bg-slate-900 rounded-full overflow-hidden border border-fuchsia-900/50">
+                  <div
+                    className="h-full bg-fuchsia-500 shadow-[0_0_10px_rgba(217,70,239,0.8)] transition-all duration-300"
+                    style={{ width: `${(campaignWins / 10) * 100}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
             {minimapToggle && (
-              <>
+              <div className="mt-2">
                 <span className="text-fuchsia-300 font-bold bg-fuchsia-900/30 px-2 py-0.5 rounded border border-fuchsia-800/50">
                   W: {trainingStats.wins} / L: {trainingStats.losses} / D:{" "}
                   {trainingStats.draws}
@@ -3373,7 +3540,7 @@ export default function App() {
                 <span className="text-cyan-400 font-mono text-[10px] ml-2">
                   CURIOSITY (EPS): {(trainingStats.epsilon * 100).toFixed(1)}%
                 </span>
-              </>
+              </div>
             )}
           </div>
           <div className="flex gap-4">
@@ -3413,43 +3580,68 @@ export default function App() {
                 className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-fuchsia-500 hover:accent-fuchsia-400 transition-all"
               />
             </div>
-
-            <button
-              onClick={() => setMinimapToggle(!minimapToggle)}
-              className="flex items-center justify-center px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-400 text-[10px] font-black uppercase tracking-widest rounded border border-slate-700 transition-all active:scale-95"
-            >
-              {minimapToggle ? "Hide Maps" : "Show Maps"}
-            </button>
-            {minimapToggle && (
+            <div className="flex flex-col gap-1 w-48">
+              <div className="flex justify-between text-[8px] font-bold text-slate-500 uppercase">
+                <span>Simulation amount</span>
+                <span className="text-fuchsia-400">{parallelCount}</span>
+              </div>
               <input
-                type="number"
-                value={miniMapGridSize}
-                onChange={(e) => setMiniMapGridSize(e.target.value)}
-                className="w-16 bg-slate-800 text-white p-1 rounded border border-slate-700 text-center text-xs"
+                type="range"
+                min="1"
+                max="200"
+                step="1"
+                value={parallelCount}
+                onChange={(e) => setParallelCount(parseInt(e.target.value))}
+                className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-fuchsia-500 hover:accent-fuchsia-400 transition-all"
               />
-            )}
-            <button
-              className="px-4 py-2 bg-rose-600/20 text-rose-400 border border-rose-500/50 hover:bg-rose-600/40 rounded font-bold text-xs transition-colors flex items-center gap-2"
-              onClick={async () => {
-                setAppMode("neural_setup");
-              }}
-            >
-              STOP WITHOUT SAVING
-            </button>
-            <button
-              className="px-4 py-2 bg-rose-600/20 text-rose-400 border border-rose-500/50 hover:bg-rose-600/40 rounded font-bold text-xs transition-colors flex items-center gap-2"
-              onClick={async () => {
-                // Save the brain before pulling the plug!
-                await exportNeuralModel();
-                setAppMode("neural_setup");
-              }}
-            >
-              💾 SAVE & STOP
-            </button>
+            </div>
+
+            <div className="flex  gap-2">
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setMinimapToggle(!minimapToggle)}
+                  className="flex items-center justify-center px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-400 text-[10px] font-black uppercase tracking-widest rounded border border-slate-700 transition-all active:scale-95"
+                >
+                  {minimapToggle ? "Hide Maps" : "Show Maps"}
+                </button>
+                {minimapToggle && (
+                  <input
+                    type="number"
+                    min="1"
+                    value={miniMapGridSize}
+                    onChange={(e) =>
+                      setMiniMapGridSize(parseInt(e.target.value) || 2)
+                    }
+                    className="w-12 bg-slate-800 text-white p-1 rounded border border-slate-700 text-center text-xs outline-none focus:border-fuchsia-500"
+                    title="Grid Size (e.g., 2 = 4 boards, 3 = 9 boards)"
+                  />
+                )}
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  className="px-3 py-1 bg-rose-600/20 text-rose-400 border border-rose-500/50 hover:bg-rose-600/40 rounded font-bold text-[10px] transition-colors flex items-center gap-1"
+                  onClick={async () => {
+                    setAppMode("neural_setup");
+                  }}
+                >
+                  STOP
+                </button>
+                <button
+                  className="px-3 py-1 bg-emerald-600/20 text-emerald-400 border border-emerald-500/50 hover:bg-emerald-600/40 rounded font-bold text-[10px] transition-colors flex items-center gap-1"
+                  onClick={async () => {
+                    await exportNeuralModel();
+                    setAppMode("neural_setup");
+                  }}
+                >
+                  💾 SAVE & STOP
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
-        {/* MATRIX GRID */}
+        {/* MATRIX GRID - THE PERFORMANCE FIX */}
         {minimapToggle && (
           <div
             style={{
@@ -3522,10 +3714,8 @@ export default function App() {
           : "text-slate-500"
   }`}
                 >
-                  {/* Status Text (ACTIVE, WON, LOST, etc.) */}
                   <span>{game.status}</span>
 
-                  {/* Dynamic Scores Row */}
                   {game.scores && (
                     <div className="text-[8px] font-mono text-slate-400 mt-1 flex gap-1 items-center">
                       {trainingPlayers.map((player, pIdx) => (
@@ -3537,7 +3727,6 @@ export default function App() {
                           >
                             {player}: {game.scores[player] || 0}
                           </span>
-                          {/* Only add a separator if it's not the last player in the list */}
                           {pIdx < trainingPlayers.length - 1 && (
                             <span className="opacity-30">|</span>
                           )}
@@ -3550,23 +3739,22 @@ export default function App() {
             ))}
           </div>
         )}
+
+        {/* THE "MICA" RESTING STATE */}
         {!minimapToggle && (
           <div className="flex-1 flex flex-col items-center justify-center relative overflow-hidden  rounded-2xl border border-white/10 shadow-2xl">
             {/* THE FLUID BLOBS - FULL CANVAS ROAMING */}
             <div className="absolute inset-0 overflow-hidden pointer-events-none">
-              {/* Primary Blob - Reacts to "Victory" sentiment */}
               <div
-                className="absolute top-1/2 left-1/2 w-[80%] h-[80%] -translate-x-1/2 -translate-y-1/2 rounded-full blur-[140px] mix-blend-screen transition duration-1000"
+                className="absolute top-1/2 left-1/2 w-[80%] h-[80%] -translate-x-1/2 -translate-y-1/2 rounded-full blur-[140px] mix-blend-screen transition duration-1000 fluid-blob"
                 style={{
                   backgroundColor: globalMood.primary,
                   animation:
                     "fluid-heavy 22s cubic-bezier(0.45, 0, 0.55, 1) infinite",
                 }}
               />
-
-              {/* Secondary Blob - Reacts to "Struggle" sentiment */}
               <div
-                className="absolute top-1/2 left-1/2 w-[90%] h-[90%] -translate-x-1/2 -translate-y-1/2 rounded-full blur-[160px] mix-blend-screen transition duration-1000"
+                className="absolute top-1/2 left-1/2 w-[90%] h-[90%] -translate-x-1/2 -translate-y-1/2 rounded-full blur-[160px] mix-blend-screen transition duration-1000 fluid-blob"
                 style={{
                   backgroundColor: globalMood.secondary,
                   animation:
@@ -3577,47 +3765,37 @@ export default function App() {
 
             <style>{`
             /* Add this to your style block for the blobs */
-.fluid-blob {
-  will-change: transform, opacity;
-  transform: translateZ(0); /* Forces hardware acceleration */
-  backface-visibility: hidden;
-}
-  /* fluid-heavy: Large sweeping arcs that "settle" into corners before swinging back */
-  @keyframes fluid-heavy {
-    0% { transform: translate(-50%, -50%) rotate(0deg) scale(1); }
-    25% { transform: translate(30%, -40%) rotate(90deg) scale(1.2); }
-    50% { transform: translate(-40%, 30%) rotate(180deg) scale(0.9); }
-    75% { transform: translate(20%, 40%) rotate(270deg) scale(1.1); }
-    100% { transform: translate(-50%, -50%) rotate(360deg) scale(1); }
-  }
+            .fluid-blob {
+              will-change: transform, opacity;
+              transform: translateZ(0); /* Forces hardware acceleration */
+              backface-visibility: hidden;
+            }
+              /* fluid-heavy: Large sweeping arcs that "settle" into corners before swinging back */
+              @keyframes fluid-heavy {
+                0% { transform: translate(-50%, -50%) rotate(0deg) scale(1); }
+                25% { transform: translate(30%, -40%) rotate(90deg) scale(1.2); }
+                50% { transform: translate(-40%, 30%) rotate(180deg) scale(0.9); }
+                75% { transform: translate(20%, 40%) rotate(270deg) scale(1.1); }
+                100% { transform: translate(-50%, -50%) rotate(360deg) scale(1); }
+              }
 
-  /* fluid-bounce: Uses momentum to "overshoot" the center point */
-  @keyframes fluid-bounce {
-    0% { transform: translate(-30%, 40%) scale(1); }
-    33% { transform: translate(45%, -30%) scale(1.3); }
-    66% { transform: translate(-50%, -45%) scale(0.8); }
-    100% { transform: translate(-30%, 40%) scale(1); }
-  }
+              /* fluid-bounce: Uses momentum to "overshoot" the center point */
+              @keyframes fluid-bounce {
+                0% { transform: translate(-30%, 40%) scale(1); }
+                33% { transform: translate(45%, -30%) scale(1.3); }
+                66% { transform: translate(-50%, -45%) scale(0.8); }
+                100% { transform: translate(-30%, 40%) scale(1); }
+              }
+            `}</style>
 
-  /* fluid-drift: Slow, full-canvas rotation */
-  @keyframes fluid-drift {
-    0% { transform: translate(-10%, -10%) rotate(0deg); }
-    50% { transform: translate(-60%, 50%) rotate(180deg); }
-    100% { transform: translate(-10%, -10%) rotate(360deg); }
-  }
-`}</style>
-
-            {/* FROSTED GLASS OVERLAY (The "Mica" effect) */}
             <div className="absolute inset-0 backdrop-blur-[60px] bg-slate-950/10" />
 
-            {/* DATA TEXT OVERLAY */}
             <div
               className="z-10 flex flex-col items-center text-center"
               style={{ width: "90vw" }}
             >
               <div className="mb-4 space-y-2" style={{ width: "90vw" }}>
                 <div className="relative h-12 w-full flex items-center justify-center overflow-visible">
-                  {/* THE LAYERED WAVE */}
                   <div
                     className={`flex transition-all duration-700 ${isFlashing ? "opacity-0 blur-md scale-95" : "opacity-100 blur-0 scale-100"}`}
                     style={{ "--wave-duration": "5s" }}
@@ -3628,8 +3806,6 @@ export default function App() {
                         className="inline-block animate-smooth-pulse text-3xl"
                         style={{
                           "--index": i,
-                          // Remove the fixed width that made it tiny
-                          // Instead, use a very large line-height to give the scaling room
                           animationDelay: `calc(var(--index) * 0.05s)`,
                           lineHeight: "1.5",
                           padding: "0 2px",
@@ -3642,7 +3818,6 @@ export default function App() {
                     ))}
                   </div>
 
-                  {/* THE VICTORY LAYER (Keep your existing code for this) */}
                   <p
                     className={`absolute text-4xl font-bold transition-all duration-500 ${isFlashing ? "opacity-100 scale-110" : "opacity-0 scale-125 blur-xl"}`}
                   >
@@ -3651,72 +3826,27 @@ export default function App() {
                 </div>
                 <style>
                   {`
-  
-@keyframes text-shimmer {
-    0% {
-        background-position: 150% 0;
-        }
-    99% {
-        background-position: -150% 0;
-    }
-    100% {
-        background-position: -150% 0;
-    }
-}
-@keyframes smooth-wave {
-  /* 0% to 30%: The Wait */
-  0%, 30% {
-    transform: scale(1) translateZ(0);
-    opacity: 0.5;
-  }
-  /* 40% to 60%: The Long Wave (20% of the 5s loop = 1 full second of "bigness") */
-  50% {
-    transform: scale(1.1) translateZ(0);
-    opacity: 1;
-  }
-  /* 70% to 100%: Back to Wait */
-  70%, 100% {
-    transform: scale(1) translateZ(0);
-    opacity: 0.5;
-  }
-}
-
-.animate-smooth-pulse {
-  display: inline-block;
-  animation: smooth-wave 5s infinite;
-  animation-delay: calc(var(--index) * 0.1s);
-  
-  /* THIS FIXES THE Y-AXIS JITTER */
-  /* Anchors the scale to the bottom so it only grows 'up' */
-  transform-origin: bottom center; 
-  
-  /* Hardware acceleration trio */
-  will-change: transform;
-  backface-visibility: hidden;
-  -webkit-font-smoothing: antialiased;
-  
-  /* Prevents font-weight shifting during scale */
-  font-synthesis: none; 
-}
-                
-.animate-shimmer-wave {
-  animation: text-shimmer 5s linear infinite;
-  
-  background: linear-gradient(
-    to right, 
-    transparent 20%, 
-    rgba(255, 255, 255, 0) 40%, 
-    rgba(255, 255, 255, 0.9) 50%, 
-    rgba(255, 255, 255, 0) 60%, 
-    transparent 80%
-  );
-  
-  background-size: 1000% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: rgba(255, 255, 255, 0.4);
+                  @keyframes text-shimmer {
+                    0% { background-position: 150% 0; }
+                    99% { background-position: -150% 0; }
+                    100% { background-position: -150% 0; }
                   }
-`}
+                  @keyframes smooth-wave {
+                    0%, 30% { transform: scale(1) translateZ(0); opacity: 0.5; }
+                    50% { transform: scale(1.1) translateZ(0); opacity: 1; }
+                    70%, 100% { transform: scale(1) translateZ(0); opacity: 0.5; }
+                  }
+                  .animate-smooth-pulse {
+                    display: inline-block;
+                    animation: smooth-wave 5s infinite;
+                    animation-delay: calc(var(--index) * 0.1s);
+                    transform-origin: bottom center; 
+                    will-change: transform;
+                    backface-visibility: hidden;
+                    -webkit-font-smoothing: antialiased;
+                    font-synthesis: none; 
+                  }
+                  `}
                 </style>
                 <div className="h-[1px] w-24 bg-gradient-to-r  from-transparent via-white/20 to-transparent mx-auto" />
               </div>
@@ -3774,12 +3904,11 @@ export default function App() {
                     >
                       <polyline
                         fill="none"
-                        stroke="#22d3ee" /* Cyan-400 */
+                        stroke="#22d3ee"
                         strokeWidth="3"
                         points={lossHistory
                           .map((loss, i) => {
                             const x = (i / (lossHistory.length - 1)) * 100;
-                            // Scale loss so 0 is at bottom (100) and 1.0 is at top (0)
                             const y = 100 - Math.min(100, (loss / 2) * 100);
                             return `${x},${y}`;
                           })
@@ -3793,7 +3922,6 @@ export default function App() {
                   className="z-10 flex flex-col items-center text-center "
                   style={{ width: "90vw" }}
                 >
-                  {/* Header Section (Matches the top style) */}
                   <div className="mb-1 mt-2 space-y-2">
                     <div className="h-[1px] w-24 bg-gradient-to-r mb-4 from-transparent via-white/20 to-transparent mx-auto" />
                     <h3 className="text-white/40 text-[10px] tracking-[0.6em] uppercase">
@@ -3801,7 +3929,6 @@ export default function App() {
                     </h3>
                   </div>
 
-                  {/* Animated Tip Container */}
                   <div className="relative h-32 w-full flex justify-center overflow-hidden">
                     <AnimatePresence mode="wait">
                       <motion.div
@@ -3809,7 +3936,7 @@ export default function App() {
                         initial={{ x: 30, opacity: 0 }}
                         animate={{ x: 0, opacity: 1 }}
                         exit={{ x: -30, opacity: 0 }}
-                        transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }} // Smooth "Mica" style easing
+                        transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
                         className="absolute inset-0 flex items-center justify-center px-8"
                       >
                         <span className="text-white/60 font-mono text-sm leading-relaxed italic max-w-md">
@@ -4033,6 +4160,19 @@ export default function App() {
     // Everyone starts as a "Novice" (99% error rate)
     const startErr = 0.99;
 
+    if (
+      !memory.lastBoardPieces ||
+      memory.lastBoardPieces.length !== rows ||
+      memory.lastBoardPieces[0].length !== cols
+    ) {
+      // If the board size changed (or it's the first move), completely reset the memory!
+      memory.lastBoardPieces = Array.from({ length: rows }, () =>
+        new Array(cols).fill(null),
+      );
+
+      // (Optional) Reset any other array-based memory your bot uses here
+      if (memory.threatMap) memory.threatMap = null;
+    }
     opponents.forEach((opp) => {
       if (!memory.opponentProfiles[opp]) {
         memory.opponentProfiles[opp] = {
@@ -4056,7 +4196,10 @@ export default function App() {
       let totalET = 0;
       let positionalScore = 0;
       let activeThreats = 0;
-      let potentialCoords = []; // To return for the move history "possibleLines"
+
+      // Pre-allocate a fixed array to avoid GC spam
+      // 0 = Empty, 1 = Player/Neutral, 2 = Blocked/Enemy
+      const segment = new Uint8Array(9);
 
       const dirs = [
         [1, 0],
@@ -4065,29 +4208,29 @@ export default function App() {
         [1, -1],
       ];
 
-      dirs.forEach(([dx, dy]) => {
-        let segment = [];
-        let coords = []; // Extract a 9-cell segment centered at (x, y)
+      for (let d = 0; d < 4; d++) {
+        const dx = dirs[d][0];
+        const dy = dirs[d][1];
 
+        // 1. Extract the 9-cell segment into the fixed typed array
         for (let i = -4; i <= 4; i++) {
           let cx = x + i * dx;
           let cy = y + i * dy;
+          let idx = i + 4; // Map -4..4 to 0..8
 
           if (cx >= 0 && cx < cols && cy >= 0 && cy < rows) {
             let cell = b[cy][cx];
-            coords.push({ x: cx, y: cy }); // Treat Void, Dead, and Trash as unplayable solid blocks
             if (cell.type === "void" || cell.dead || cell.type === "trash") {
-              segment.push("B");
+              segment[idx] = 2; // Blocked
             } else if (cell.piece === pieceToCheck || cell.type === "neutral") {
-              segment.push("P"); // Player/Neutral piece
+              segment[idx] = 1; // Player
             } else if (!cell.piece) {
-              segment.push("E"); // Empty space
+              segment[idx] = 0; // Empty
             } else {
-              segment.push("B"); // Enemy piece acts as a block
+              segment[idx] = 2; // Enemy (Block)
             }
           } else {
-            segment.push("B"); // Out of bounds
-            coords.push(null);
+            segment[idx] = 2; // Out of bounds
           }
         }
 
@@ -4095,31 +4238,36 @@ export default function App() {
         let dirScore = 0;
         let dirThreats = 0;
         let hasRunway = false;
-        let bestPath = []; // --- DYNAMIC WINDOW SCALING ---
-        // Slide windows of sizes 5 down to 1. This allows the AI to see
-        // bounded 3s and 4s inside incredibly dense late-game boards!
 
+        // 2. Fast Sliding Window (NO SLICE, NO FILTER)
         for (let size = 5; size >= 1; size--) {
-          // Calculate valid start bounds to ensure the center piece (index 4) is always included
           let minStart = Math.max(0, 4 - size + 1);
           let maxStart = Math.min(4, 9 - size);
 
           for (let start = minStart; start <= maxStart; start++) {
-            let win = segment.slice(start, start + size);
-            if (win.includes("B")) continue; // Only skip if THIS specific smaller window is blocked
+            let blocked = false;
+            let pCount = 0;
 
+            // Manual loop replaces .filter() and .slice()
+            for (let w = 0; w < size; w++) {
+              let val = segment[start + w];
+              if (val === 2) {
+                blocked = true;
+                break;
+              } else if (val === 1) {
+                pCount++;
+              }
+            }
+
+            if (blocked) continue;
             hasRunway = true;
-            let pCount = win.filter((c) => c === "P").length;
 
             if (pCount > maxPieces) {
               maxPieces = pCount;
-              bestPath = coords
-                .slice(start, start + size)
-                .filter((c) => c !== null);
             }
 
-            let leftOpen = start > 0 && segment[start - 1] === "E";
-            let rightOpen = start + size < 9 && segment[start + size] === "E";
+            let leftOpen = start > 0 && segment[start - 1] === 0;
+            let rightOpen = start + size < 9 && segment[start + size] === 0;
             let openEnds = (leftOpen ? 1 : 0) + (rightOpen ? 1 : 0);
 
             let windowScore = 0;
@@ -4139,7 +4287,7 @@ export default function App() {
                 windowScore = 100000;
                 windowThreats = 0.5;
               } else {
-                windowScore = 50000; // Bounded tight 3
+                windowScore = 50000;
               }
             } else if (pCount === 2) {
               windowScore = openEnds === 2 ? 40000 : 5000;
@@ -4157,28 +4305,24 @@ export default function App() {
         if (hasRunway) {
           positionalScore += dirScore;
           activeThreats += dirThreats;
-          potentialCoords.push({ dir: [dx, dy], coords: bestPath });
-
           if (maxPieces >= 3) linesFormed++;
           if (maxPieces >= 4) totalET += 1;
           if (maxPieces === 5) totalET += 1;
         }
-      });
+      }
 
-      // MULTILINE BONUS MATH (TTT2 Rules)
+      // MULTILINE BONUS MATH
       if (linesFormed > 1) {
         totalET += linesFormed - 1;
         positionalScore += linesFormed * 300000;
       }
-
-      // Massive reward for Double 3s, 4-3s, Double 4s (Forks)
       if (activeThreats >= 2) positionalScore += 800000;
       if (activeThreats >= 3) positionalScore += 2000000;
 
       return {
         score: positionalScore,
         extraTurns: totalET,
-        potentialLines: potentialCoords,
+        potentialLines: [], // Stripped out to save memory! Not needed for neural training.
       };
     };
 
