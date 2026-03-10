@@ -2909,10 +2909,11 @@ export default function App() {
               moves: game.moves,
               cols: cols,
               rows: rows,
-              epoch: trainingEpoch + 1,
+              epoch: currentEpochRef.current,
               lines: [...game.lines],
             });
           }
+          currentEpochRef.current += 1;
 
           if (game.status === "won") {
             const currentWinRate =
@@ -4063,7 +4064,7 @@ export default function App() {
               {bestGameSnapshot && (
                 <div className="justify-center flex  flex-col gap-4 items-center opacity-80 mix-blend-screen pointer-events-none">
                   <div className="text-[10px] text-cyan-300 font-mono font-bold tracking-widest uppercase flex items-center gap-2">
-                    GEN-{bestGameSnapshot.epoch} | Highest Score:{" "}
+                    GEN-{bestGameSnapshot.epoch + 1} | Highest Score:{" "}
                     {bestGameSnapshot.score} ({bestGameSnapshot.moves} Moves)
                   </div>
 
