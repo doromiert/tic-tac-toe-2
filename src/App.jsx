@@ -86,7 +86,12 @@ export default function App() {
   useEffect(() => {
     window.triggerFlash = () => {
       setIsFlashing(true);
+      const id = Date.now();
+      setBursts((prev) => [...prev, id]);
       setTimeout(() => setIsFlashing(false), 1000);
+      setTimeout(() => {
+        setBursts((prev) => prev.filter((bid) => bid !== id));
+      }, 1000); // Clean up after 1s
     };
   }, []);
   const [miniMapGridSize, setMiniMapGridSize] = useState(10);
@@ -109,6 +114,21 @@ export default function App() {
   const [vramUsage, setVramUsage] = useState({ bytes: 0, tensors: 0 });
 
   const tips = [
+    "Fireworks? No, that's just the AI's remaining brain cells exiting through the exhaust port.",
+    "Every firework represents a procedural bot that just got its ego bruised.",
+    "If the screen turns into a constant firework show, call NASA. Or a priest.",
+    "The AI celebrates its wins because it knows the next 4,000 games are going to be brutal.",
+    "Sparkle, sparkle, clanker. You finally did it.",
+    "That firework cost approximately 0.0004 cents in electricity. Worth it.",
+    "Win #24: The AI is currently feeling itself. Don't ruin the moment.",
+    "The heatmap looks like farmland because the AI is currently 'harvesting' easy horizontal points.",
+    "Horizontal stripes? The AI hasn't discovered that 'Vertical' exists yet. Be patient.",
+    "Your AI is currently playing Tic-Tac-Toe in 1D. It'll find the second dimension eventually.",
+    "Farmland heatmaps: 10% strategy, 90% scanline bias.",
+    "If the stripes turn into checkers, the AI has discovered the concept of 'blocking'.",
+    "The AI is currently a simple farmer. One day, it will be a 9x9 architect.",
+    "Don't mind the stripes; the Neural Net is just 'reading' the board like a book, row by row.",
+    "Emergent behavior check: Are the stripes breaking? If yes, the AI is starting to 'see' the grid.",
     "The background flashing Cyan is the AI having a brief moment of clarity before being bullied by the procedural bot again.",
     "Red background? The bot is currently a 'Professional Loser.' But it's practicing!",
     "If the background stays Cyan for more than 10 seconds, hide your credit cards—the AI is becoming too powerful.",
@@ -155,7 +175,7 @@ export default function App() {
     "If you see a 99% win rate, check if you accidentally unplugged the opponent's brain.",
     "Bellman's Equation: Because why solve a problem now when you can recursively pass the blame to your future self?",
     "The bot isn't cowering in the corner anymore; it's just 'tactically loitering.'",
-    "Don't trust the loss graph. It lies. Like my ex, but with more floating-point errors.",
+    "Don't trust the loss graph. It lies. Like politicians, but with more floating-point errors.",
     "The center is no longer lava. It is now a high-stakes zone of financial and emotional investment.",
     "If the browser tabs start closing themselves, the AI has reached 'peak optimization.'",
     "JavaScript: The only language where `[] + []` is an empty string but `{} + []` is 0. And we're using it for AI. God help us.",
@@ -589,6 +609,7 @@ export default function App() {
   const [unlockedLevels, setUnlockedLevels] = useState([0]); // Always unlock first level by default
   // App Navigation State
   const [appMode, setAppMode] = useState("title"); // title, local_setup, local, solo_setup, solo, campaign_select, campaign, editor, multiplayer_setup
+  const [bursts, setBursts] = useState([]);
   const [gameMode, setGameMode] = useState("standard"); // standard, zone_control, corruption, turf_wars, pulse_blitz, cascade, mirror_protocol
   const [pulseTime, setPulseTime] = useState(100); // Percentage 0-100
   const pulseInterval = 3000; // 3 seconds per turn in Blitz, pulse_blitz, cascade, mirror_protocol
@@ -2966,6 +2987,11 @@ export default function App() {
           let gameResultValue = 0.0;
 
           if (game.status === "won") {
+            const id = Date.now();
+            setBursts((prev) => [...prev, id]);
+            setTimeout(() => {
+              setBursts((prev) => prev.filter((bid) => bid !== id));
+            }, 1000); // Clean up after 1s
             gameResultValue = 1.0;
             statsRef.current.wins++;
 
@@ -3959,6 +3985,27 @@ export default function App() {
         {/* THE "MICA" RESTING STATE */}
         {!minimapToggle && (
           <div className="flex-1 flex flex-col items-center justify-center relative overflow-hidden  rounded-2xl border border-white/10 shadow-2xl">
+            {/* THE FIREWORKS OVERLAY */}
+            <div className="absolute inset-0 pointer-events-none overflow-hidden">
+              {bursts.map((id) => (
+                <div
+                  key={id}
+                  className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2"
+                >
+                  {[...Array(12)].map((_, i) => (
+                    <div
+                      key={i}
+                      className="absolute w-2 h-8 rounded-full firework-particle"
+                      style={{
+                        backgroundColor: "#22d3ee",
+                        "--angle": `${i * 30}deg`,
+                        "--delay": `${Math.random() * 0.2}s`,
+                      }}
+                    />
+                  ))}
+                </div>
+              ))}
+            </div>
             {/* THE FLUID BLOBS - FULL CANVAS ROAMING */}
             <div className="absolute inset-0 overflow-hidden pointer-events-none">
               <div
@@ -3972,6 +4019,28 @@ export default function App() {
             </div>
 
             <style>{`
+            .firework-particle {
+  opacity: 0;
+  transform: rotate(var(--angle)) translateY(0) scale(1);
+  animation: explode 0.8s ease-out forwards;
+  animation-delay: var(--delay);
+  filter: blur(2px) brightness(1.5);
+  box-shadow: 0 0 15px #22d3ee;
+}
+
+@keyframes explode {
+  0% {
+    opacity: 0;
+    transform: rotate(var(--angle)) translateY(0) scale(1);
+  }
+  20% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: rotate(var(--angle)) translateY(150px) scale(0.1);
+  }
+}
             /* Hardware acceleration and strict separation of concerns */
             .fluid-blob {
               will-change: transform;
