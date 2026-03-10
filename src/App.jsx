@@ -2910,6 +2910,9 @@ export default function App() {
     currentGoalsRef.current = currentGoals;
   }, [currentGoals]);
   useEffect(() => {
+    const isPvpActive = currentGoalsRef.current.some(
+      (g) => g.type === "standard",
+    );
     // --- HELPER: REBUILD LINES FOR HOLOGRAM ---
     const extractWinningLines = (board, cols, rows) => {
       const lines = [];
@@ -3199,9 +3202,6 @@ export default function App() {
           totalNeuralMoves += validMoves.length;
         } else {
           // --- PROCEDURAL BOT TURN ---
-          const isPvpActive = currentGoalsRef.current.some(
-            (g) => g.type === "standard",
-          );
 
           if (isPvpActive) {
             const move = getProceduralMove(
