@@ -70,6 +70,37 @@ const createEmptyBoard = (c, r) =>
     );
 
 export default function App() {
+  // --- RL TELEMETRY UTILS ---
+  class QValueTracker {
+    constructor(windowSize = 100) {
+      this.size = windowSize;
+      this.buffer = new Float32Array(windowSize);
+      this.pointer = 0;
+      this.count = 0;
+      this.currentSum = 0;
+    }
+    add(qValue) {
+      if (this.count >= this.size) this.currentSum -= this.buffer[this.pointer];
+      else this.count++;
+      this.buffer[this.pointer] = qValue;
+      this.currentSum += qValue;
+      this.pointer = (this.pointer + 1) % this.size;
+    }
+    getAverage() {
+      return this.count === 0 ? 0 : this.currentSum / this.count;
+    }
+  }
+  // --- TELEMETRY STATE ---
+  const qTrackerRef = useRef(new QValueTracker(200));
+  const episodeLengthsRef = useRef(new QValueTracker(100)); // Reusing logic for O(1) avg moves
+  const [telemetry, setTelemetry] = useState({
+    avgQ: 0,
+    meanEpisodeLength: 0,
+    bufferFillPct: 0,
+  });
+  const globalEpsilonRef = useRef(1.0);
+  const DECAY_RATE = 0.99995; // Very slow decay over 50k epochs
+  const PANIC_SCALE = 4.0; // Allows up to a 5x multiplier when losing
   const statsRef = useRef({ wins: 0, losses: 0, draws: 0 });
   const [trainingStats, setTrainingStats] = useState({
     wins: 0,
@@ -804,39 +835,55 @@ export default function App() {
     if (!modelRef.current || batch.length === 0) return;
 
     const batchSize = batch.length;
+    const GAMMA = 0.95; // Future reward discount factor
 
-    // 1. ALLOCATE ONE CONTIGUOUS BLOCK OF MEMORY
     const stateData = new Float32Array(batchSize * 81);
+    const nextStateData = new Float32Array(batchSize * 81);
     const targets = new Float32Array(batchSize);
+    const doneMask = new Float32Array(batchSize);
+    const rewards = new Float32Array(batchSize);
 
-    // 2. RAW MEMORY COPY
     for (let i = 0; i < batchSize; i++) {
       const memoryItem = batch[i];
       const offset = i * 81;
-      stateData.set(memoryItem.state, offset);
 
-      //  THE FIX: Rely strictly on the shaped immediate reward.
-      // We drop the Bellman lookahead (nextQs) because evaluating
-      // patchAfter forces the AI to evaluate an illegal/occupied square,
-      // which was poisoning the Q-values with massive negative numbers.
-      targets[i] = memoryItem.reward;
+      stateData.set(memoryItem.state, offset);
+      nextStateData.set(memoryItem.nextState, offset);
+      rewards[i] = memoryItem.reward;
+      doneMask[i] = memoryItem.done ? 1.0 : 0.0;
     }
 
-    // 3. SEND RAW MEMORY DIRECTLY TO GPU
+    // Predict Q-values for all NEXT states in one clean GPU pass
+    let nextQs;
+    tf.tidy(() => {
+      const nextStateTensor = tf.tensor2d(nextStateData, [batchSize, 81]);
+      nextQs = modelRef.current.predict(nextStateTensor).dataSync();
+
+      let batchMaxQ = -Infinity;
+      for (let i = 0; i < batchSize; i++) {
+        if (nextQs[i] > batchMaxQ) batchMaxQ = nextQs[i];
+      }
+      qTrackerRef.current.add(batchMaxQ);
+    });
+
+    // Apply the Bellman Equation: R + gamma * max(Q(s'))
+    for (let i = 0; i < batchSize; i++) {
+      if (doneMask[i] === 1.0) {
+        targets[i] = rewards[i]; // Terminal states have no future
+      } else {
+        targets[i] = rewards[i] + GAMMA * nextQs[i];
+      }
+    }
+
     const xTensor = tf.tensor2d(stateData, [batchSize, 81]);
     const yTensor = tf.tensor2d(targets, [batchSize, 1]);
 
-    // 4. TRAIN ONCE (Removed the double-train bug!)
     const lossResult = await modelRef.current.trainOnBatch(xTensor, yTensor);
-
-    // 5. EXTRACT THE LOSS
     const loss = Array.isArray(lossResult) ? lossResult[0] : lossResult;
 
-    // 6. HARD VRAM CLEANUP
     xTensor.dispose();
     yTensor.dispose();
 
-    // 7. UPDATE UI
     setLatestLoss(loss);
     setLossHistory((prev) => {
       const updated = [...prev, loss];
@@ -2990,6 +3037,7 @@ export default function App() {
         let game = gamesRef.current[i];
 
         if (game.status !== "active") {
+          episodeLengthsRef.current.add(game.moves);
           // --- END OF GAME LOGIC & CAMPAIGN PROGRESSION ---
           if (game.scores.X > bestScoreRef.current) {
             bestScoreRef.current = game.scores.X;
@@ -3073,6 +3121,27 @@ export default function App() {
           }
 
           // 1. Update Exponential Moving Average (Focuses on last ~20 games)
+          statsRef.current.recentWinRate =
+            0.05 * gameResultValue + 0.95 * statsRef.current.recentWinRate;
+
+          // 2. Decay the global baseline (The Progression)
+          globalEpsilonRef.current = Math.max(
+            MIN_EPSILON,
+            globalEpsilonRef.current * DECAY_RATE,
+          );
+
+          // 3. Calculate the Dynamic Multiplier (The Adrenaline)
+          // If win rate is 1.0 (100%), multiplier is 1.0.
+          // If win rate is 0.0 (0%), multiplier is 1.0 + 4.0 = 5.0.
+          const panicMultiplier =
+            1.0 +
+            PANIC_SCALE * Math.pow(1.0 - statsRef.current.recentWinRate, 2);
+
+          // 4. Combine them
+          epsilonRef.current = Math.min(
+            1.0,
+            globalEpsilonRef.current * panicMultiplier,
+          );
           statsRef.current.recentWinRate =
             0.05 * gameResultValue + 0.95 * statsRef.current.recentWinRate;
 
@@ -3236,6 +3305,12 @@ export default function App() {
             }
           }
 
+          if (Math.random() < epsilonRef.current) {
+            bestMove =
+              task.validMoves[
+                Math.floor(Math.random() * task.validMoves.length)
+              ];
+          }
           let game = task.game;
           const patchBefore = getLocal9x9Context(
             game.board,
@@ -3260,7 +3335,7 @@ export default function App() {
             game.lines.push(...simResult.newLines);
           }
 
-          let reward = 0.1;
+          let reward = -0.05;
           const pointsGained = game.scores.X - (game.lastScore || 0);
 
           if (pointsGained > 0) {
@@ -3270,9 +3345,6 @@ export default function App() {
             // This makes the AI "lean in" to successful patterns.
             // 1. Calculate how many points the Neural AI gained this turn
             const playerPointsGained = game.scores.X - (game.lastScoreX || 0);
-
-            // 2. Calculate how many points the ENEMIES gained since the last turn
-            // (This requires tracking lastScoreO, lastScoreT, etc.)
             const enemyPointsGained =
               game.scores.O -
               (game.lastScoreO || 0) +
@@ -3282,7 +3354,8 @@ export default function App() {
             // 3. THE EQUATION:
             // We weight enemy points slightly higher (1.5x) to cure the "cowardice".
             // This forces the AI to realize that letting an enemy score is PAINFUL.
-            reward = playerPointsGained * 2.0 - enemyPointsGained * 3.0;
+            reward += playerPointsGained * 1.0;
+            reward -= enemyPointsGained * 1.5;
 
             // 4. Update Epsilon based on the Net Result
             if (reward > 0) {
@@ -3297,8 +3370,10 @@ export default function App() {
             }
           }
 
-          if (simResult.extraTurns > 0)
-            reward += Math.pow(simResult.extraTurns, 2) * 3.0;
+          if (simResult.extraTurns > 0) {
+            // Cap the extra turn reward to prevent gradient explosion on massive combos
+            reward += Math.min(3.0, simResult.extraTurns * 1.0);
+          }
 
           game.lastScore = game.scores.X;
 
@@ -3325,26 +3400,45 @@ export default function App() {
 
             if (anyFailed) {
               game.status = "lost";
-              reward -= 30.0;
+              reward = -5.0; // Hard overwrite for failure
             } else {
               game.status = "won";
-              reward += 50.0;
+              reward = 5.0; // Hard overwrite for victory
+            }
+          } else {
+            // Soft clamp for active gameplay to maintain stability
+            reward = Math.max(-2.0, Math.min(2.0, reward));
+          }
+
+          let nextStatePatch = new Float32Array(81).fill(-1.0);
+
+          if (!simResult.matchOver) {
+            // Grab the first available empty cell to act as a proxy for the next state's value
+            for (let y = 0; y < rows; y++) {
+              for (let x = 0; x < cols; x++) {
+                const cell = simResult.board[y][x];
+                if (!cell.piece && !cell.dead && cell.type !== "void") {
+                  nextStatePatch = getLocal9x9Context(
+                    simResult.board,
+                    x,
+                    y,
+                    "X",
+                    rows,
+                    cols,
+                  );
+                  break;
+                }
+              }
+              if (nextStatePatch[0] !== -1.0) break;
             }
           }
 
           const clampedReward = Math.max(-1.0, Math.min(1.0, reward));
-          const patchAfter = getLocal9x9Context(
-            game.board,
-            bestMove.x,
-            bestMove.y,
-            "X",
-            rows,
-            cols,
-          );
 
+          // Push to memory
           game.memory.push({
             state: patchBefore,
-            nextState: patchAfter,
+            nextState: nextStatePatch, // Clean, valid empty tile context
             reward: clampedReward,
             done: game.status !== "active",
           });
@@ -3363,6 +3457,14 @@ export default function App() {
 
     // --- UI SYNC INTERVAL ---
     uiSyncIntervalId.current = setInterval(() => {
+      setTelemetry({
+        avgQ: qTrackerRef.current.getAverage(),
+        meanEpisodeLength: episodeLengthsRef.current.getAverage(),
+        bufferFillPct: Math.min(
+          100,
+          (globalReplayBuffer.current.length / maxMemoryEntries) * 100,
+        ),
+      });
       const lerpColor = (rgba1, rgba2, factor) => {
         const parse = (s) => s.match(/\d+(\.\d+)?/g).map(Number);
         const [r1, g1, b1, a1] = parse(rgba1);
@@ -3771,7 +3873,7 @@ export default function App() {
         }}
       >
         {/* HEADER */}
-        <div className="flex justify-between items-start border-b border-slate-800 pb-4 mb-4">
+        <div className="flex justify-between items-center mb-4">
           <div className="flex-1">
             <h1 className="text-2xl font-black text-fuchsia-400">
               NEURAL TRAINING ACTIVE
@@ -3809,7 +3911,20 @@ export default function App() {
               </div>
             )}
           </div>
-          <div className="flex gap-4">
+
+          <div className="flex gap-4 h-full">
+            <div className="flex flex-col items-center w-64">
+              <div className="flex justify-between w-full text-[8px] text-slate-500 uppercase tracking-tighter mb-1">
+                <span>Replay Buffer Saturation</span>
+                <span>{telemetry.bufferFillPct.toFixed(1)}%</span>
+              </div>
+              <div className="w-full h-1 bg-slate-800 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-cyan-500 transition-all duration-300 ease-out"
+                  style={{ width: `${telemetry.bufferFillPct}%` }}
+                />
+              </div>
+            </div>
             {/* VRAM USAGE */}
             <div className="flex flex-col gap-1 w-32">
               <div className="flex justify-between text-[8px] font-bold text-slate-500 uppercase">
@@ -4202,13 +4317,24 @@ export default function App() {
                 </div>
 
                 <div className="w-full flex flex-col gap-1">
-                  <span className="text-cyan-400/80 font-mono text-[11px] uppercase tracking-widest">
-                    <span className="text-fuchsia-300 font-bold bg-fuchsia-900/30 px-2 py-0.5 rounded border border-fuchsia-800/50">
+                  <span className="text-cyan-400/80 font-mono text-[11px] uppercase flex flex-col items-center tracking-widest">
+                    <span className="text-fuchsia-300 font-bold bg-fuchsia-900/30 px-2 py-0.5 rounded border w-min text-nowrap border-fuchsia-800/50">
                       W: {trainingStats.wins} / L: {trainingStats.losses} / D:{" "}
                       {trainingStats.draws}
                     </span>
                   </span>
+
                   <div className="flex items-center justify-center gap-3 mt-4 opacity-60">
+                    <div className="flex flex-col items-start">
+                      <span className="text-[9px] text-slate-400 uppercase">
+                        Avg Q Value
+                      </span>
+                      <span className="text-cyan-200 font-mono text-sm">
+                        {telemetry.avgQ.toFixed(3)}
+                      </span>
+                    </div>
+                    <div className="w-[1px] h-6 bg-white/10" />
+
                     <div className="flex flex-col items-start">
                       <span className="text-[9px] text-slate-400 uppercase">
                         Confidence
