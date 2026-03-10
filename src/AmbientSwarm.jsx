@@ -29,6 +29,7 @@ function evalLensCurve(z, lens) {
   return depthValue * strength + rnd * variance;
 }
 export const PS5Swarm = ({
+  bursts = [],
   opacity: cOpacity = 1,
   particleCount = 950,
   color1 = [6, 182, 212],
@@ -104,6 +105,7 @@ export const PS5Swarm = ({
 
   useEffect(() => {
     cfg.current = {
+      bursts,
       color1,
       color2,
       colorVariance,
@@ -132,6 +134,7 @@ export const PS5Swarm = ({
       windY,
     };
   }, [
+    bursts,
     color1,
     color2,
     colorVariance,
@@ -401,14 +404,47 @@ export const PS5Swarm = ({
         );
 
         // 3. PERCEPTUAL HUE-SHIFT CA (Optimized)
+
+        // 2. PULSE LOGIC (Move this BEFORE the fillStyle assignments)
+        let pulseWhiteFactor = 0;
+        if (c.bursts && c.bursts.length > 0) {
+          const now = Date.now();
+          const maxRadius = Math.max(width, height) * 1.2;
+          const ringWidth = 250;
+
+          c.bursts.forEach((burstTime) => {
+            const age = now - burstTime;
+            if (age > 1000 || age < 0) return;
+            const progress = age / 1000;
+            const currentRadius = progress * maxRadius;
+            const dx = p.screenX - cx;
+            const dy = p.screenY - cy;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const ringIntensity = Math.max(
+              0,
+              1 - Math.abs(dist - currentRadius) / (ringWidth / 2),
+            );
+            pulseWhiteFactor = Math.max(pulseWhiteFactor, ringIntensity);
+          });
+        }
+
+        // 3. APPLY PULSE TO COLORS
+        const finalR = Math.round(r + (255 - r) * pulseWhiteFactor);
+        const finalG = Math.round(g + (255 - g) * pulseWhiteFactor);
+        const finalB = Math.round(b + (255 - b) * pulseWhiteFactor);
+        const finalAlpha = Math.min(1, baseAlpha + pulseWhiteFactor * 0.5);
+
+        // 4. DRAWING
         if (c.aberrationIntensity > 0 && bokehFactor > 0.1) {
-          const [h, s, l] = rgbToHsl(r, g, b);
+          // For CA, we convert our "pulsed" RGB back to HSL to maintain the hue-shift logic
+          const [h, s, l] = rgbToHsl(finalR, finalG, finalB);
           const caOffset = Math.min(
             30,
             bokehFactor * visualSize * c.aberrationIntensity * 15,
           );
-          const caAlpha = baseAlpha * 0.7;
+          const caAlpha = finalAlpha * 0.7;
 
+          // Red-ish Shift
           ctx.fillStyle = `hsla(${h + c.hueShiftAmount}, ${s}%, ${l}%, ${caAlpha})`;
           ctx.beginPath();
           ctx.ellipse(
@@ -422,6 +458,7 @@ export const PS5Swarm = ({
           );
           ctx.fill();
 
+          // Blue-ish Shift
           ctx.fillStyle = `hsla(${h - c.hueShiftAmount}, ${s}%, ${l}%, ${caAlpha})`;
           ctx.beginPath();
           ctx.ellipse(
@@ -435,7 +472,8 @@ export const PS5Swarm = ({
           );
           ctx.fill();
 
-          ctx.fillStyle = `hsla(${h}, ${s}%, ${l + glintIntensity * 20}%, ${baseAlpha})`;
+          // Center (Main Body)
+          ctx.fillStyle = `hsla(${h}, ${s}%, ${l + glintIntensity * 20}%, ${finalAlpha})`;
           ctx.beginPath();
           ctx.ellipse(
             p.screenX,
@@ -448,7 +486,8 @@ export const PS5Swarm = ({
           );
           ctx.fill();
         } else {
-          ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${baseAlpha})`;
+          // Standard Render (Use finalR/G/B here!)
+          ctx.fillStyle = `rgba(${finalR}, ${finalG}, ${finalB}, ${finalAlpha})`;
           ctx.beginPath();
           ctx.ellipse(
             p.screenX,

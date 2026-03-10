@@ -85,6 +85,29 @@ export default function App() {
   const [isCampaignMode, setIsCampaignMode] = useState(false);
   const [campaignWins, setCampaignWins] = useState(0); // Tracks wins for the 10-win gate
   useEffect(() => {
+    window.testMood = (positive) => {
+      const lerpColor = (rgba1, rgba2, factor) => {
+        const parse = (s) => s.match(/\d+(\.\d+)?/g).map(Number);
+        const [r1, g1, b1, a1] = parse(rgba1);
+        const [r2, g2, b2, a2] = parse(rgba2);
+        return `rgba(${Math.round(r1 + (r2 - r1) * factor)}, ${Math.round(
+          g1 + (g2 - g1) * factor,
+        )}, ${Math.round(b1 + (b2 - b1) * factor)}, ${a1 + (a2 - a1) * factor})`;
+      };
+
+      setGlobalMood({
+        primary: lerpColor(
+          "rgba(244, 63, 94, 0.3)", // Panicked Red
+          "rgba(6, 182, 212, 0.3)", // Confident Cyan
+          Number(positive),
+        ),
+        secondary: lerpColor(
+          "rgba(251, 146, 60, 0.2)", // Stressed Orange
+          "rgba(16, 185, 129, 0.2)", // Relaxed Emerald
+          Number(positive),
+        ),
+      });
+    };
     window.triggerFlash = () => {
       setIsFlashing(true);
       const id = Date.now();
@@ -4085,6 +4108,7 @@ export default function App() {
 
             <div className="absolute inset-0 backdrop-blur-[60px] bg-slate-950/10" />
             <PS5Swarm
+              bursts={bursts}
               opacity={0.5}
               particleCount={1100}
               colorVariance={1}
