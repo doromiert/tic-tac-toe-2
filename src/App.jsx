@@ -109,6 +109,22 @@ export default function App() {
   const [vramUsage, setVramUsage] = useState({ bytes: 0, tensors: 0 });
 
   const tips = [
+    "10,000 Epochs: The AI has officially spent more time playing Tic-Tac-Toe than you've spent sleeping this week.",
+    "Epsilon is at 80%? That's not 'Randomness,' that's 'Creative Genius.'",
+    "Two wins! It's not a fluke anymore; it's a trend.",
+    "The AI is currently in a state of 'Calculated Panic.'",
+    "The procedural bot is starting to sweat. Or it would, if it had sweat glands.",
+    "We're at the point where the AI knows it's being punished, but it's not quite sure why yet.",
+    "If Epsilon stays at 100%, the AI isn't learning; it's just gambling with your VRAM.",
+    "A win at 10k is like finding a diamond in a coal mine. Now, let's find the rest of them.",
+    "28 draws? That's not a failure, that's a 9x9 stalemate masterpiece.",
+    "The AI has mastered the art of being annoying. Winning is next.",
+    "Epoch 7300: The bot has officially graduated from 'Target Practice' to 'Roadblock'.",
+    "A draw is just a win that ran out of time.",
+    "If you can't beat 'em, don't let 'em win either. - The AI, probably.",
+    "The heatmap is currently 50% strategy and 50% spite.",
+    "We're one 'A-ha!' moment away from global domination. Or at least winning a game of Tic-Tac-Toe.",
+    "The AI is currently calculating the exact coordinates of the opponent's frustration.",
     "The loss graph is auto-scaling because the AI's failures are too small for a fixed scale to handle.",
     "If the graph looks like a heartbeat, the AI is alive. If it's a flat line, it's either perfect or braindead.",
     "Normalization: Making the AI's 0.00001 loss look like a mountain so you feel better about yourself.",
@@ -233,6 +249,7 @@ export default function App() {
     }, 20000); // 20 seconds
     return () => clearInterval(interval);
   }, []);
+
   setTimeout(() => {
     const tips = [
       "The neural bot learns by playing procedural bots, refining its strategy over time.",
