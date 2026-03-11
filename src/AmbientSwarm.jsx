@@ -220,19 +220,14 @@ export const PS5Swarm = ({
       ctx.clearRect(0, 0, width, height);
       const c = cfg.current;
 
-      globalCameraTime += 0.001;
+      // 1. Time & Wind Updates
       globalParticleTime += 0.001 * c.timeScale;
       globalWindY = (globalWindY + c.windY * c.timeScale) % 2000;
 
-      const tiltX = Math.sin(globalCameraTime * 0.5) * 0.1 * c.cameraWobble;
-      const tiltZ = Math.cos(globalCameraTime * 0.3) * 0.08 * c.cameraWobble;
-      const cosX = Math.cos(tiltX),
-        sinX = Math.sin(tiltX);
-      const cosZ = Math.cos(tiltZ),
-        sinZ = Math.sin(tiltZ);
-
       for (let i = 0; i < particleCount; i++) {
         const p = particles[i];
+
+        // 2. Motion Logic
         p.theta +=
           (0.001 + p.rndOrbit * 0.001 * c.orbitVariance) *
           p.orbitDir *
@@ -245,6 +240,7 @@ export const PS5Swarm = ({
         p.rotZ +=
           p.rndTumbleZ * 0.05 * c.tumbleSpeed * c.tumbleVariance * c.timeScale;
 
+        // 3. Vertical Position & Cohesion
         let rawY = p.origY + globalWindY;
         if (rawY > 1000) rawY -= 2000;
         else if (rawY < -1000) rawY += 2000;
@@ -258,45 +254,43 @@ export const PS5Swarm = ({
             ? Math.sin(globalParticleTime * 100 + p.id) * c.turbulence * 10
             : 0);
 
+        // 4. Direct 3D -> 2D Projection (No Camera Rotation)
         let x = Math.cos(p.theta) * finalRadius * c.spreadMultiplier;
         let z = Math.sin(p.theta) * finalRadius * c.spreadMultiplier;
         let y = rawY * (1 - cohesionBlend) * c.spreadMultiplier;
 
-        let ty = y * cosX - z * sinX;
-        let tz = y * sinX + z * cosX;
-        let tx = x * cosZ - ty * sinZ;
-        ty = x * sinZ + ty * cosZ;
+        const scale = FOV / (FOV + z + CAMERA_Z);
+        p.scale = z < -CAMERA_Z ? 0 : scale;
+        p.screenX = x * scale + cx;
+        p.screenY = y * scale + cy;
+        p.projectedZ = z;
 
-        const scale = FOV / (FOV + tz + CAMERA_Z);
-        p.scale = tz < -CAMERA_Z ? 0 : scale;
-        p.screenX = tx * scale + cx;
-        p.screenY = ty * scale + cy;
-        p.projectedZ = tz;
-
-        // Pre-calculating blur for batching
-        const distFromFocus = Math.abs(tz);
+        // 5. Blur Pre-calculation
+        const distFromFocus = Math.abs(z);
         const blurVal = (c.gaussianBlur + (distFromFocus / 400) * 4.0) * scale;
-        p.roundedBlur = Math.round(blurVal * 2) / 2; // Step by 0.5 to keep batch sizes large
+        p.roundedBlur = Math.round(blurVal * 2) / 2; // Step by 0.5 for batching
         p.distFromFocus = distFromFocus;
       }
 
-      // Sort by Z for depth
+      // 6. Depth Sort
       particles.sort((a, b) => b.projectedZ - a.projectedZ);
 
       ctx.globalCompositeOperation = c.blendMode;
       let currentFilterBlur = -1;
 
+      // 7. Drawing Loop
       for (let i = 0; i < particleCount; i++) {
         const p = particles[i];
         if (p.scale <= 0) continue;
 
-        // BATCHED FILTER: Only change when necessary
+        // Filter Batching
         if (p.roundedBlur !== currentFilterBlur) {
           ctx.filter =
             p.roundedBlur > 0.4 ? `blur(${p.roundedBlur}px)` : "none";
           currentFilterBlur = p.roundedBlur;
         }
 
+        // Size & Alpha Calculations
         const bokehFactor = Math.min(
           2,
           (p.distFromFocus / 600) * c.bokehIntensity,
@@ -323,7 +317,7 @@ export const PS5Swarm = ({
           finalVisualSize * Math.abs(Math.cos(p.rotX)),
         );
 
-        // Color Calculation
+        // Color Logic
         const mix = Math.max(
           0,
           Math.min(1, 0.5 + (p.rndColor - 0.5) * c.colorVariance),
@@ -331,7 +325,6 @@ export const PS5Swarm = ({
         const r = (c.color1[0] + (c.color2[0] - c.color1[0]) * mix) | 0;
         const g = (c.color1[1] + (c.color2[1] - c.color1[1]) * mix) | 0;
         const b = (c.color1[2] + (c.color2[2] - c.color1[2]) * mix) | 0;
-
         const baseAlpha = Math.max(
           0.05,
           Math.min(
@@ -341,10 +334,7 @@ export const PS5Swarm = ({
           ),
         );
 
-        // Sub-pixel positions (No bitwise OR here to prevent stepping)
-        const sX = p.screenX;
-        const sY = p.screenY;
-
+        // Chromatic Aberration & Rendering
         if (c.aberrationIntensity > 0 && bokehFactor > 0.1) {
           const [h, s, l] = rgbToHsl(r, g, b);
           const caOffset = Math.min(
@@ -354,12 +344,28 @@ export const PS5Swarm = ({
 
           ctx.fillStyle = `hsla(${h + c.hueShiftAmount}, ${s}%, ${l}%, ${baseAlpha * 0.7})`;
           ctx.beginPath();
-          ctx.ellipse(sX - caOffset, sY, radiusX, radiusY, p.rotZ, 0, TWO_PI);
+          ctx.ellipse(
+            p.screenX - caOffset,
+            p.screenY,
+            radiusX,
+            radiusY,
+            p.rotZ,
+            0,
+            TWO_PI,
+          );
           ctx.fill();
 
           ctx.fillStyle = `hsla(${h - c.hueShiftAmount}, ${s}%, ${l}%, ${baseAlpha * 0.7})`;
           ctx.beginPath();
-          ctx.ellipse(sX + caOffset, sY, radiusX, radiusY, p.rotZ, 0, TWO_PI);
+          ctx.ellipse(
+            p.screenX + caOffset,
+            p.screenY,
+            radiusX,
+            radiusY,
+            p.rotZ,
+            0,
+            TWO_PI,
+          );
           ctx.fill();
 
           ctx.fillStyle = `hsla(${h}, ${s}%, ${l + 10}%, ${baseAlpha})`;
@@ -368,7 +374,7 @@ export const PS5Swarm = ({
         }
 
         ctx.beginPath();
-        ctx.ellipse(sX, sY, radiusX, radiusY, p.rotZ, 0, TWO_PI);
+        ctx.ellipse(p.screenX, p.screenY, radiusX, radiusY, p.rotZ, 0, TWO_PI);
         ctx.fill();
       }
 
