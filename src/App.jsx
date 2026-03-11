@@ -38,6 +38,7 @@ const PLAYER_COLORS = {
   S: "#fbbf24",
 };
 // --- UTILS ---
+
 const generateId = () => Math.random().toString(36).substr(2, 9);
 const downloadJSON = (data, filename) => {
   const blob = new Blob([JSON.stringify(data, null, 2)], {
@@ -2886,6 +2887,7 @@ export default function App() {
     scores: { X: 0, O: 0, T: 0, S: 0 },
   };
   const isCurrentlyFitting = useRef(false);
+  const isCurrentlyPredicting = useRef(false);
 
   // Add these near your other refs
   const campaignStateRef = useRef({
@@ -2895,6 +2897,75 @@ export default function App() {
     wins: 0,
   });
   const currentGoalsRef = useRef([{ type: "standard", target: 0 }]);
+  const getValidMoves = (game, rows, cols) => {
+    const valid = [];
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const c = game.board[y][x];
+
+        // 1. Occupancy: Is there a piece? (X, O, etc.)
+        const isOccupied = !!c.piece;
+
+        // 2. Terrain: Is it a void or a hard-locked tile?
+        const isBlockedTerrain = [
+          "void",
+          "locked_mech",
+          "dup",
+          "rot_cw",
+          "rot_ccw",
+        ].includes(c.type);
+
+        // 3. Conditional Locks: Letter locks must be 'unlocked'
+        // If mechanicalLock is true, we ONLY allow it if it's a letter lock AND unlocked.
+        const isLocked = c.mechanicalLock && !(c.locked_letter && c.unlocked);
+
+        if (!isOccupied && !isBlockedTerrain && !isLocked) {
+          valid.push({ x, y });
+        }
+      }
+    }
+    return valid;
+  };
+  const resolveGameStatus = (game, validMovesCount) => {
+    const goals = currentGoalsRef.current;
+    const isEndState =
+      validMovesCount === 0 ||
+      goals.some(
+        (g) =>
+          g.type === "max_moves" && g.mode === "end" && game.moves >= g.target,
+      );
+
+    if (!isEndState) return "active";
+
+    // --- SCORING LOGIC ---
+    let failedGoal = false;
+    let allGoalsMet = true;
+
+    goals.forEach((g) => {
+      if (g.type === "min_score" && game.scores.X < g.target)
+        allGoalsMet = false;
+      if (g.type === "exact_score" && game.scores.X !== g.target)
+        allGoalsMet = false;
+      if (g.type === "max_score" && game.scores.X > g.target) failedGoal = true;
+    });
+
+    // --- PVP LOGIC (Standard Mode) ---
+    const isPvp = goals.some((g) => g.type === "standard");
+    if (isPvp) {
+      const others = ["O", "T", "S"].filter((p) => trainingPlayers.includes(p));
+      const highestOpponent = Math.max(
+        ...others.map((p) => game.scores[p] || 0),
+      );
+
+      if (game.scores.X > highestOpponent) return "won";
+      if (game.scores.X === highestOpponent) return "draw";
+      return "lost";
+    }
+
+    // --- CHALLENGE MODE LOGIC ---
+    if (failedGoal) return "lost";
+    return allGoalsMet ? "won" : "lost";
+  };
 
   // Sync them whenever the state changes
   useEffect(() => {
@@ -3010,8 +3081,13 @@ export default function App() {
     const resetGameInPlace = (game) => {
       for (let y = 0; y < rows; y++) {
         for (let x = 0; x < cols; x++) {
-          game.board[y][x].piece = null;
-          game.board[y][x].dead = false;
+          const cell = game.board[y][x];
+          cell.piece = null; // Ensure this is null
+          cell.dead = false; // Ensure this is false
+          cell.mechanicalLock = false;
+          cell.unlocked = false;
+          cell.lineId = null;
+          if (cell.locked_letter) cell.locked_letter = null;
         }
       }
       game.turn = "X";
@@ -3032,314 +3108,400 @@ export default function App() {
     // --- THE ULTIMATE MATH LOOP (GLOBAL INFERENCE BATCHING) ---
     const runSimulationStep = async () => {
       if (!isTraining.current) return;
+      if (isCurrentlyPredicting.current) return;
+      isCurrentlyPredicting.current = true;
 
       const activeNeuralTasks = [];
       let totalNeuralMoves = 0;
 
-      // --- PHASE 1: QUEUE & CLEANUP (Start of Step) ---
-      for (let i = 0; i < parallelCount; i++) {
-        let game = gamesRef.current[i];
+      try {
+        // --- PHASE 1: QUEUE & CLEANUP (Start of Step) ---
+        for (let i = 0; i < parallelCount; i++) {
+          let game = gamesRef.current[i];
 
-        if (game.status !== "active") {
-          // Stats & Snapshots
-          episodeLengthsRef.current.add(game.moves);
-          if (game.scores.X > bestScoreRef.current) {
-            bestScoreRef.current = game.scores.X;
-            setBestGameSnapshot({
-              board: game.board.map((row) => row.map((cell) => ({ ...cell }))),
-              score: game.scores.X,
-              moves: game.moves,
-              cols,
-              rows,
-              epoch: currentEpochRef.current,
-              lines: [...game.lines],
-            });
-          }
-
-          // Global Metrics Update
-          const resVal =
-            game.status === "won" ? 1.0 : game.status === "draw" ? 0.2 : 0.0;
-          statsRef.current.recentWinRate =
-            0.05 * resVal + 0.95 * statsRef.current.recentWinRate;
-
-          if (game.status === "won") statsRef.current.wins++;
-          else if (game.status === "lost") statsRef.current.losses++;
-          else statsRef.current.draws++;
-
-          // Epsilon Adrenaline Logic
-          globalEpsilonRef.current = Math.max(
-            MIN_EPSILON,
-            globalEpsilonRef.current * DECAY_RATE,
-          );
-          const panic = Math.pow(1.0 - statsRef.current.recentWinRate, 2);
-          epsilonRef.current = Math.min(
-            1.0,
-            globalEpsilonRef.current + panic * 0.5,
-          );
-
-          // Campaign Progression (10 wins to advance)
-          if (campaignStateRef.current.isActive && game.status === "won") {
-            campaignStateRef.current.wins++;
-            setCampaignWins(campaignStateRef.current.wins);
-            if (campaignStateRef.current.wins >= 10) {
-              const nIdx = campaignStateRef.current.currentIndex + 1;
-              if (nIdx < campaignStateRef.current.levels.length) {
-                const lvl = campaignStateRef.current.levels[nIdx];
-                currentGoalsRef.current = lvl.goals;
-                setCampaignIndex(nIdx);
-                setCampaignWins(0);
-                setCols(lvl.cols || 9);
-                setRows(lvl.rows || 9);
-                globalReplayBuffer.current.length = 0; // Fresh brain for fresh mechanics
-                campaignStateRef.current.wins = 0;
-                campaignStateRef.current.currentIndex = nIdx;
-              }
-            }
-          }
-
-          // Memory Flush
-          game.memory.forEach((m) => globalReplayBuffer.current.push(m));
-          if (globalReplayBuffer.current.length > maxMemoryEntries) {
-            globalReplayBuffer.current.splice(
-              0,
-              globalReplayBuffer.current.length - maxMemoryEntries,
-            );
-          }
-
-          resetGameInPlace(game);
-          currentEpochRef.current++;
-          setTrainingEpoch((e) => e + 1);
-
-          // Training Trigger
-          if (
-            !isCurrentlyFitting.current &&
-            globalReplayBuffer.current.length > 128
-          ) {
-            isCurrentlyFitting.current = true;
-            setTimeout(async () => {
-              const b = sampleBatch(globalReplayBuffer.current, 128);
-              await trainOnMemoryBatch(b);
-              isCurrentlyFitting.current = false;
-            }, 10);
-          }
-          continue;
-        }
-
-        // Generate Moves
-        let valid = [];
-        for (let y = 0; y < rows; y++) {
-          for (let x = 0; x < cols; x++) {
-            const c = game.board[y][x];
-            if (
-              !c.piece &&
-              !c.dead &&
-              !["void", "locked_mech"].includes(c.type)
-            )
-              valid.push({ x, y });
-          }
-        }
-
-        if (valid.length === 0) {
-          game.status = "draw";
-          continue;
-        }
-
-        // Turn Management
-        if (game.turn === "X") {
-          activeNeuralTasks.push({
-            game,
-            validMoves: valid,
-            startIndex: totalNeuralMoves,
-          });
-          totalNeuralMoves += valid.length;
-        } else {
-          const move = isPvpActive
-            ? getProceduralMove(
-                game.board,
-                game.turn,
-                rows,
+          if (game.status !== "active") {
+            // Stats & Snapshots
+            episodeLengthsRef.current.add(game.moves);
+            if (game.scores.X > bestScoreRef.current) {
+              bestScoreRef.current = game.scores.X;
+              setBestGameSnapshot({
+                board: game.board.map((row) =>
+                  row.map((cell) => ({ ...cell })),
+                ),
+                score: game.scores.X,
+                moves: game.moves,
                 cols,
-                aiDiff,
-                aiBehavior,
-                gameMode,
-                trainingPlayers,
-              )
-            : null;
-          if (move) {
-            const res = executePureTurn(
-              move.x,
-              move.y,
-              game.turn,
-              game.board,
-              trainingPlayers,
-              game.scores,
-            );
-            game.board = res.board;
-            game.scores = res.scores;
-            if (res.newLines.length > 0) game.lines.push(...res.newLines);
-            if (res.extraTurns === 0) {
-              const idx = trainingPlayers.indexOf(game.turn);
-              game.turn = trainingPlayers[(idx + 1) % trainingPlayers.length];
+                rows,
+                epoch: currentEpochRef.current,
+                lines: [...game.lines],
+              });
             }
-          } else {
-            game.turn = "X"; // Solo mode fallback
-          }
-        }
-      }
 
-      // --- PHASE 2: STRIKE (Bulk Prediction) ---
-      if (totalNeuralMoves > 0) {
-        const globalContext = new Float32Array(totalNeuralMoves * 81);
-        let ptr = 0;
-        activeNeuralTasks.forEach((t) => {
-          t.validMoves.forEach((m) => {
-            for (let y = m.y - 4; y <= m.y + 4; y++) {
-              for (let x = m.x - 4; x <= m.x + 4; x++) {
-                if (y < 0 || y >= rows || x < 0 || x >= cols)
-                  globalContext[ptr++] = -1.0;
-                else {
-                  const c = t.game.board[y][x];
-                  if (c.piece === "X") globalContext[ptr++] = 1.0;
-                  else if (c.piece) globalContext[ptr++] = -0.5;
-                  else if (c.type === "void" || c.dead)
-                    globalContext[ptr++] = -1.0;
-                  else globalContext[ptr++] = 0.0;
+            // Global Metrics Update
+            const resVal =
+              game.status === "won" ? 1.0 : game.status === "draw" ? 0.2 : 0.0;
+            statsRef.current.recentWinRate =
+              0.05 * resVal + 0.95 * statsRef.current.recentWinRate;
+
+            if (game.status === "won") statsRef.current.wins++;
+            else if (game.status === "lost") statsRef.current.losses++;
+            else statsRef.current.draws++;
+
+            // Epsilon Adrenaline Logic
+            globalEpsilonRef.current = Math.max(
+              MIN_EPSILON,
+              globalEpsilonRef.current * DECAY_RATE,
+            );
+            const panic = Math.pow(1.0 - statsRef.current.recentWinRate, 2);
+            epsilonRef.current = Math.min(
+              1.0,
+              globalEpsilonRef.current + panic * 0.5,
+            );
+
+            // Campaign Progression (10 wins to advance)
+            if (campaignStateRef.current.isActive && game.status === "won") {
+              campaignStateRef.current.wins++;
+              setCampaignWins(campaignStateRef.current.wins);
+              if (campaignStateRef.current.wins >= 10) {
+                const nIdx = campaignStateRef.current.currentIndex + 1;
+                if (nIdx < campaignStateRef.current.levels.length) {
+                  const lvl = campaignStateRef.current.levels[nIdx];
+                  currentGoalsRef.current = lvl.goals;
+                  setCampaignIndex(nIdx);
+                  setCampaignWins(0);
+                  setCols(lvl.cols || 9);
+                  setRows(lvl.rows || 9);
+                  globalReplayBuffer.current.length = 0; // Fresh brain for fresh mechanics
+                  campaignStateRef.current.wins = 0;
+                  campaignStateRef.current.currentIndex = nIdx;
                 }
               }
             }
-          });
-        });
 
-        const scores = tf.tidy(() =>
-          modelRef.current
-            .predict(tf.tensor2d(globalContext, [totalNeuralMoves, 81]))
-            .dataSync(),
-        );
-
-        // --- PHASE 3: RESOLVE (Apply same logic as resolveTurn) ---
-        activeNeuralTasks.forEach((task) => {
-          let best = task.validMoves[0],
-            maxQ = -Infinity;
-          for (let m = 0; m < task.validMoves.length; m++) {
-            if (scores[task.startIndex + m] > maxQ) {
-              maxQ = scores[task.startIndex + m];
-              best = task.validMoves[m];
+            // Memory Flush
+            game.memory.forEach((m) => globalReplayBuffer.current.push(m));
+            if (globalReplayBuffer.current.length > maxMemoryEntries) {
+              globalReplayBuffer.current.splice(
+                0,
+                globalReplayBuffer.current.length - maxMemoryEntries,
+              );
             }
-          }
-          if (Math.random() < epsilonRef.current)
-            best =
-              task.validMoves[
-                Math.floor(Math.random() * task.validMoves.length)
-              ];
 
-          const patchBefore = getLocal9x9Context(
-            task.game.board,
-            best.x,
-            best.y,
-            "X",
-            rows,
-            cols,
-          );
-          const res = executePureTurn(
-            best.x,
-            best.y,
-            "X",
-            task.game.board,
-            trainingPlayers,
-            task.game.scores,
-          );
+            resetGameInPlace(game);
+            currentEpochRef.current++;
+            setTrainingEpoch((e) => e + 1);
 
-          task.game.board = res.board;
-          task.game.scores = res.scores;
-          task.game.moves++;
-          if (res.newLines.length > 0) task.game.lines.push(...res.newLines);
-
-          // Reward Shaping
-          let reward = -0.01; // Tiny step penalty
-          const pGained = task.game.scores.X - (task.game.lastScoreX || 0);
-          const eGained =
-            task.game.scores.O -
-            (task.game.lastScoreO || 0) +
-            (task.game.scores.T - (task.game.lastScoreT || 0));
-          reward += pGained * 1.5 - eGained * 2.0; // Prioritize blocking
-          if (res.extraTurns > 0) reward += 0.5;
-
-          // EVALUATE WIN/LOSS (Directly mirrors your resolveTurn logic)
-          let isFull = !task.game.board.some((row) =>
-            row.some(
-              (c) => !c.piece && !["void", "locked_mech"].includes(c.type),
-            ),
-          );
-          let forcedEnd = currentGoalsRef.current.some(
-            (g) =>
-              g.type === "max_moves" &&
-              g.mode === "end" &&
-              task.game.moves >= g.target,
-          );
-          let isEndState = isFull || forcedEnd;
-
-          let allMet = true;
-          let anyFailed = false;
-
-          currentGoalsRef.current.forEach((g) => {
-            if (g.type === "min_score" && task.game.scores.X < g.target) {
-              allMet = false;
-              if (isEndState) anyFailed = true;
-            }
-            if (g.type === "exact_score" && task.game.scores.X !== g.target) {
-              allMet = false;
-              if (isEndState) anyFailed = true;
-            }
-            if (g.type === "max_score" && task.game.scores.X > g.target) {
-              anyFailed = true;
-            }
+            // Training Trigger
             if (
-              g.type === "max_moves" &&
-              task.game.moves > g.target &&
-              g.mode !== "end"
+              !isCurrentlyFitting.current &&
+              globalReplayBuffer.current.length > 128
             ) {
-              anyFailed = true;
+              isCurrentlyFitting.current = true;
+              setTimeout(async () => {
+                const b = sampleBatch(globalReplayBuffer.current, 128);
+                await trainOnMemoryBatch(b);
+                isCurrentlyFitting.current = false;
+              }, 10);
             }
-          });
-
-          if (anyFailed) {
-            task.game.status = "lost";
-            reward = -5.0;
-          } else if (allMet && isEndState) {
-            task.game.status = "won";
-            reward = 5.0;
-          } else if (isEndState) {
-            task.game.status = "lost"; // Ended without meeting objectives
-            reward = -2.0;
+            continue;
           }
 
-          // Save Memory
-          task.game.memory.push({
-            state: patchBefore,
-            nextState: getLocal9x9Context(
+          // Generate Moves
+          let valid = getValidMoves(game, rows, cols);
+
+          // Handle game end BEFORE asking the Neural Network for a move
+          const finalStatus = resolveGameStatus(game, valid.length);
+          if (finalStatus !== "active") {
+            game.status = finalStatus;
+            // Calculate final reward based on status
+            const finalReward =
+              finalStatus === "won" ? 5.0 : finalStatus === "draw" ? 0.5 : -2.0;
+
+            // Memory flush and reset logic here...
+            resetGameInPlace(game);
+            continue;
+          }
+
+          // Proceed to Neural Tasks only if status is "active"
+          if (game.turn === "X") {
+            activeNeuralTasks.push({
+              game,
+              validMoves: valid,
+              startIndex: totalNeuralMoves,
+            });
+            totalNeuralMoves += valid.length;
+          } else {
+            const move = isPvpActive
+              ? getProceduralMove(
+                  game.board,
+                  game.turn,
+                  rows,
+                  cols,
+                  aiDiff,
+                  aiBehavior,
+                  gameMode,
+                  trainingPlayers,
+                )
+              : null;
+            if (move) {
+              const res = executePureTurn(
+                move.x,
+                move.y,
+                game.turn,
+                game.board,
+                trainingPlayers,
+                game.scores,
+              );
+              game.board = res.board;
+              game.scores = res.scores;
+              if (res.newLines.length > 0) game.lines.push(...res.newLines);
+              if (res.extraTurns === 0) {
+                const idx = trainingPlayers.indexOf(game.turn);
+                game.turn = trainingPlayers[(idx + 1) % trainingPlayers.length];
+              }
+            } else {
+              game.turn = "X"; // Solo mode fallback
+            }
+          }
+        }
+
+        // --- PHASE 2: STRIKE (Bulk Prediction) ---
+        if (totalNeuralMoves > 0) {
+          const globalContext = new Float32Array(totalNeuralMoves * 81);
+          let ptr = 0;
+
+          // Context building remains the same (it's pure JS, no GPU yet)
+          activeNeuralTasks.forEach((t) => {
+            t.validMoves.forEach((m) => {
+              for (let y = m.y - 4; y <= m.y + 4; y++) {
+                for (let x = m.x - 4; x <= m.x + 4; x++) {
+                  if (y < 0 || y >= rows || x < 0 || x >= cols)
+                    globalContext[ptr++] = -1.0;
+                  else {
+                    const c = t.game.board[y][x];
+                    if (c.piece === "X") globalContext[ptr++] = 1.0;
+                    else if (c.piece) globalContext[ptr++] = -0.5;
+                    else if (c.type === "void" || c.dead)
+                      globalContext[ptr++] = -1.0;
+                    else globalContext[ptr++] = 0.0;
+                  }
+                }
+              }
+            });
+          });
+
+          // --- MANUAL GPU MANAGEMENT ---
+          // 1. Wrap the tensor creation and prediction
+          const inputTensor = tf.tensor2d(globalContext, [
+            totalNeuralMoves,
+            81,
+          ]);
+          const predictionTensor = modelRef.current.predict(inputTensor);
+
+          // 2. Extract data to CPU
+          const scores = predictionTensor.dataSync();
+
+          // 3. IMMEDIATELY KILL THE TENSORS
+          inputTensor.dispose();
+          predictionTensor.dispose();
+
+          // --- PHASE 3: RESOLVE ---
+          activeNeuralTasks.forEach((task) => {
+            // 1. EMERGENCY ESCAPE: If no moves exist, force end-state evaluation
+            // if (!task.validMoves || task.validMoves.length === 0) {
+            //   task.game.status = "draw";
+            //   return;
+            // }
+
+            let best = task.validMoves[0],
+              maxQ = -Infinity;
+
+            for (let m = 0; m < task.validMoves.length; m++) {
+              const currentScore = scores[task.startIndex + m];
+              if (currentScore > maxQ) {
+                maxQ = currentScore;
+                best = task.validMoves[m];
+              }
+            }
+
+            // Epsilon-greedy
+            if (Math.random() < epsilonRef.current) {
+              best =
+                task.validMoves[
+                  Math.floor(Math.random() * task.validMoves.length)
+                ];
+            }
+
+            if (!best) return;
+
+            // Capture state before move
+            const patchBefore = getLocal9x9Context(
               task.game.board,
               best.x,
               best.y,
               "X",
               rows,
               cols,
-            ),
-            reward: Math.max(-1, Math.min(1, reward / 5.0)),
-            done: task.game.status !== "active",
+            );
+
+            const res = executePureTurn(
+              best.x,
+              best.y,
+              "X",
+              task.game.board,
+              trainingPlayers,
+              task.game.scores,
+            );
+
+            // Update game state
+            task.game.board = res.board;
+            task.game.scores = res.scores;
+            task.game.moves++;
+            if (res.newLines.length > 0) task.game.lines.push(...res.newLines);
+
+            // Reward Shaping
+            let reward = -0.01; // Tiny step penalty
+            const pGained = task.game.scores.X - (task.game.lastScoreX || 0);
+            const eGained =
+              task.game.scores.O -
+              (task.game.lastScoreO || 0) +
+              (task.game.scores.T - (task.game.lastScoreT || 0));
+            reward += pGained * 1.5 - eGained * 2.0; // Prioritize blocking
+            if (res.extraTurns > 0) reward += 0.5;
+
+            let isAvailableMoves = task.game.board.some((row) =>
+              row.some((cell) => {
+                // 1. Is the spot occupied?
+                // If there's a piece or it's 'dead', it's NOT available.
+                console.log(cell);
+                if (cell.piece || cell.dead) return false;
+
+                // 2. Is it a valid floor?
+                // We'll allow "empty" OR any cell that doesn't have a type defined (fallback)
+                const isFloor =
+                  !cell.type || ["empty", "zap", "mov"].includes(cell.type);
+                if (!isFloor) return false;
+
+                // 3. The Lock Logic (The "P14" Correction)
+                // Available if: NO mechanical lock OR (Locked + Unlocked)
+                const isAccessible =
+                  !cell.mechanicalLock || (cell.locked_letter && cell.unlocked);
+
+                return isAccessible;
+              }),
+            );
+
+            // Determine if this is a competitive mode
+            const isStandardPvp = currentGoalsRef.current.some(
+              (g) => g.type === "standard",
+            );
+            let forcedEnd = currentGoalsRef.current.some(
+              (g) =>
+                g.type === "max_moves" &&
+                g.mode === "end" &&
+                task.game.moves >= g.target,
+            );
+            let isEndState = !isAvailableMoves || forcedEnd;
+            let allMet = true;
+            let anyFailed = false;
+
+            // 1. Check Specific Goals (Moves, Max Scores, etc.)
+            currentGoalsRef.current.forEach((g) => {
+              if (g.type === "min_score" && task.game.scores.X < g.target) {
+                allMet = false;
+                if (isEndState) anyFailed = true;
+              }
+              if (g.type === "min_score" && task.game.scores.X < g.target) {
+                allMet = false;
+                if (isEndState) anyFailed = true;
+              }
+              if (g.type === "exact_score" && task.game.scores.X !== g.target) {
+                allMet = false;
+                if (isEndState) anyFailed = true;
+              }
+              if (g.type === "max_score" && task.game.scores.X > g.target) {
+                anyFailed = true;
+              }
+              if (
+                g.type === "max_moves" &&
+                task.game.moves > g.target &&
+                g.mode !== "end"
+              ) {
+                anyFailed = true;
+              }
+            });
+            if (isStandardPvp && isEndState) {
+              const scores = task.game.scores;
+              // Check if any other player has a score >= X
+              const others = ["O", "T", "S"].filter((p) =>
+                trainingPlayers.includes(p),
+              );
+              const outscoredByOpponent = others.some(
+                (p) => scores[p] >= scores.X,
+              );
+
+              if (outscoredByOpponent) {
+                allMet = false; // Even if min_score met, you didn't "win" the match
+              }
+            }
+
+            if (isEndState) {
+              const scores = task.game.scores;
+              const highestOpponent = Math.max(
+                scores.O || 0,
+                scores.T || 0,
+                scores.S || 0,
+              );
+
+              if (anyFailed) {
+                task.game.status = "lost";
+                reward = -5.0;
+              } else if (scores.X > highestOpponent) {
+                task.game.status = "won";
+                reward = 5.0;
+              } else if (scores.X === highestOpponent) {
+                task.game.status = "draw";
+                // Lower the reward for a draw so it doesn't prefer draws over trying to win
+                reward = 0.1;
+              } else {
+                task.game.status = "lost";
+                reward = -2.0;
+              }
+            }
+
+            // Save Memory
+            task.game.memory.push({
+              state: patchBefore,
+              nextState: getLocal9x9Context(
+                task.game.board,
+                best.x,
+                best.y,
+                "X",
+                rows,
+                cols,
+              ),
+              reward: Math.max(-1, Math.min(1, reward / 5.0)),
+              done: task.game.status !== "active",
+            });
+
+            task.game.lastScoreX = task.game.scores.X;
+            task.game.lastScoreO = task.game.scores.O;
+
+            if (res.extraTurns === 0 && task.game.status === "active") {
+              // FIX: Changed 'game.turn' to 'task.game.turn'
+              const idx = trainingPlayers.indexOf(task.game.turn);
+              task.game.turn =
+                trainingPlayers[(idx + 1) % trainingPlayers.length];
+            }
           });
-
-          task.game.lastScoreX = task.game.scores.X;
-          task.game.lastScoreO = task.game.scores.O;
-
-          if (res.extraTurns === 0 && task.game.status === "active") {
-            const idx = trainingPlayers.indexOf(task.game.turn);
-            task.game.turn =
-              trainingPlayers[(idx + 1) % trainingPlayers.length];
-          }
-        });
+        }
+      } catch (err) {
+        console.error("Simulation Error:", err);
+      } finally {
+        isCurrentlyPredicting.current = false;
+        // Only request the next frame once the current one is FINISHED
+        trainingLoopId.current = requestAnimationFrame(runSimulationStep);
       }
-
-      trainingLoopId.current = requestAnimationFrame(runSimulationStep);
     };
 
     // --- UI SYNC INTERVAL ---
