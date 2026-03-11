@@ -128,9 +128,12 @@ export default function App() {
   }
   // --- TELEMETRY STATE ---
   const qTrackerRef = useRef(new QValueTracker(200));
+  // Controls the Behavioral Cloning state
+  const bcConfigRef = useRef({ enabled: true, iters: 0 });
   const levelTemplateRef = useRef(null);
   const stepsSinceYieldRef = useRef(0);
   const episodeLengthsRef = useRef(new QValueTracker(100)); // Reusing logic for O(1) avg moves
+  const [bcActiveUI, setBcActiveUI] = useState(true); // Matches the initial ref state
   const [telemetry, setTelemetry] = useState({
     avgQ: 0,
     meanEpisodeLength: 0,
@@ -153,6 +156,7 @@ export default function App() {
   const [campaignLevels, setCampaignLevels] = useState([]);
   const [isCampaignMode, setIsCampaignMode] = useState(false);
   const [campaignWins, setCampaignWins] = useState(0); // Tracks wins for the 10-win gate
+  const flashId = useRef(0);
   useEffect(() => {
     window.testMood = (positive) => {
       const lerpColor = (rgba1, rgba2, factor) => {
@@ -179,8 +183,7 @@ export default function App() {
     };
     window.triggerFlash = () => {
       setIsFlashing(true);
-      // FIX: Add a random string to guarantee uniqueness
-      const id = Date.now() + Math.random().toString(36).substring(2, 9);
+      const id = Date.now();
 
       setBursts((prev) => [...prev, id]);
 
@@ -3314,23 +3317,55 @@ export default function App() {
           // --- PHASE 3: RESOLVE (No Stats Here!) ---
           // ==========================================
           activeNeuralTasks.forEach((task) => {
-            let best = task.validMoves[0],
-              maxQ = -Infinity;
+            // --- BC ITERATION CUTOFF LOGIC ---
+            if (bcConfigRef.current.iters <= 10000) {
+              if (bcConfigRef.current.iters === 10000) {
+                bcConfigRef.current.enabled = false; // Naturally turn off
+                console.log("[BC] 10k iterations reached. Auto-disabled.");
+              }
+              bcConfigRef.current.iters++;
+            }
 
-            for (let m = 0; m < task.validMoves.length; m++) {
-              const currentScore = scores[task.startIndex + m];
-              if (currentScore > maxQ) {
-                maxQ = currentScore;
-                best = task.validMoves[m];
+            let best = null;
+
+            // --- BEHAVIORAL CLONING INJECTION ---
+            if (bcConfigRef.current.enabled) {
+              // Query the expert engine instead of the neural net
+              best = getProceduralMove(
+                task.game.board,
+                "X", // The piece the neural net is currently training on
+                rows,
+                cols,
+                "hard", // Force expert heuristic for quality cloning data
+                aiBehavior,
+                gameMode,
+                trainingPlayers,
+              );
+            }
+
+            // --- STANDARD NEURAL FALLBACK ---
+            // If BC is off, or the procedural engine somehow returns null, use the model
+            if (!best) {
+              best = task.validMoves[0];
+              let maxQ = -Infinity;
+
+              for (let m = 0; m < task.validMoves.length; m++) {
+                const currentScore = scores[task.startIndex + m];
+                if (currentScore > maxQ) {
+                  maxQ = currentScore;
+                  best = task.validMoves[m];
+                }
+              }
+
+              // Standard exploration (only applied if NOT cloning)
+              if (Math.random() < epsilonRef.current) {
+                best =
+                  task.validMoves[
+                    Math.floor(Math.random() * task.validMoves.length)
+                  ];
               }
             }
 
-            if (Math.random() < epsilonRef.current) {
-              best =
-                task.validMoves[
-                  Math.floor(Math.random() * task.validMoves.length)
-                ];
-            }
             if (!best) return;
 
             const patchBefore = getLocal9x9Context(
@@ -3407,7 +3442,7 @@ export default function App() {
             // Apply end-game rewards based on what the engine decided
             if (newStatus === "won") {
               reward += 5.0;
-              if (window.triggerFlash) window.triggerFlash();
+              window.triggerFlash();
             } else if (newStatus === "lost") {
               reward -= 5.0;
             } else if (newStatus === "draw") {
@@ -3997,6 +4032,20 @@ export default function App() {
 
             <div className="flex  gap-2">
               <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    const newState = !bcConfigRef.current.enabled;
+                    bcConfigRef.current.enabled = newState;
+                    setBcActiveUI(newState);
+                  }}
+                  className={`flex items-center justify-center px-3 py-1 text-[10px] font-black uppercase tracking-widest rounded border transition-all active:scale-95 ${
+                    bcActiveUI
+                      ? "bg-cyan-950 hover:bg-cyan-900 text-cyan-400 border-cyan-800"
+                      : "bg-slate-800 hover:bg-slate-700 text-slate-400 border-slate-700"
+                  }`}
+                >
+                  {bcActiveUI ? "BC Override: ON" : "BC Override: OFF"}
+                </button>
                 <button
                   onClick={() => setMinimapToggle(!minimapToggle)}
                   className="flex items-center justify-center px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-400 text-[10px] font-black uppercase tracking-widest rounded border border-slate-700 transition-all active:scale-95"
@@ -5661,60 +5710,6 @@ export default function App() {
     }
 
     return selectedMove;
-  }
-
-  function simulateGameTick(
-    game,
-    x,
-    y,
-    player,
-    rows,
-    cols,
-    trainingPlayers,
-    gameMode,
-  ) {
-    // 1. Working copy (In RL we often mutate the ref directly for speed)
-    const b = game.board;
-    let totalLinesToErase = new Set();
-
-    // 2. Queue the move
-    let q = [{ x, y, piece: player, overwrite: false }];
-
-    // Handle Mirror Protocol if active
-    if (gameMode === "mirror_protocol") {
-      let mx = cols - 1 - x;
-      if (mx >= 0 && mx < cols && !b[y][mx].piece && !b[y][mx].mechanicalLock) {
-        q.push({ x: mx, y: y, piece: player, overwrite: false });
-      }
-    }
-
-    // 3. Run the Pipeline (Ensure these are imported/available)
-    // Phase: Placements
-    const pResult = resolvePlacements(q, b, cols, rows, trainingPlayers, false);
-    pResult.linesToErase.forEach((l) => totalLinesToErase.add(l));
-
-    // Phase: Updates (Switches/Gates)
-    if (typeof updateSwitches === "function") updateSwitches(b);
-
-    // Phase: First Gravity
-    if (gameMode === "cascade") runGravity(b, null, false, cols, rows);
-
-    // Phase: Machine Tick (The core logic for machines)
-    tickMachines(
-      b,
-      null,
-      false,
-      cols,
-      rows,
-      trainingPlayers,
-      totalLinesToErase,
-    );
-
-    // Phase: Final Updates
-    if (typeof updateSwitches === "function") updateSwitches(b);
-    if (gameMode === "cascade") runGravity(b, null, false, cols, rows);
-
-    return { board: b, linesRemoved: totalLinesToErase };
   }
 
   // --- MAIN GAME UI ---
