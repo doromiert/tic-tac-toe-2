@@ -2982,17 +2982,13 @@ export default function App() {
     currentGoalsRef.current = currentGoals;
   }, [currentGoals]);
   const MOOD_PALETTES = {
-    // Your original working colors
     panic: { p: "rgba(244, 63, 94, 0.4)", s: "rgba(251, 146, 60, 0.3)" },
     learning: { p: "rgba(168, 85, 247, 0.4)", s: "rgba(236, 72, 153, 0.3)" },
     mastery: { p: "rgba(6, 182, 212, 0.4)", s: "rgba(16, 185, 129, 0.3)" },
     neutral: { p: "rgba(59, 130, 246, 0.3)", s: "rgba(71, 85, 105, 0.2)" },
-
-    // NEW: "The Arrogant Gambler" (Matches original brightness)
     delusion: { p: "rgba(245, 158, 11, 0.4)", s: "rgba(251, 191, 36, 0.3)" },
-
-    // NEW: "The Brain-melt" (Deep Violet/Indigo mix)
     crisis: { p: "rgba(79, 70, 229, 0.4)", s: "rgba(30, 27, 75, 0.3)" },
+    confusion: { p: "rgba(139, 92, 246, 0.4)", s: "rgba(79, 70, 229, 0.3)" },
   };
   useEffect(() => {
     const isPvpActive = currentGoalsRef.current.some(
@@ -3569,17 +3565,13 @@ export default function App() {
 
       if (isBC) {
         targetMood = MOOD_PALETTES.learning;
-      }
-      // DELUSION: Q-value is "perfect" (> 1.0) but Win Rate is subpar (< 45%)
-      else if (avgQ > 1.0 && wr < 0.45) {
+      } else if (loss > 0.15) {
+        targetMood = MOOD_PALETTES.confusion;
+      } else if (avgQ > 1.0 && wr < 0.45) {
         targetMood = MOOD_PALETTES.delusion;
-      }
-      // PANIC: Failing or high exploration
-      else if (wr < 0.35 || eps > 0.6) {
+      } else if (wr < 0.35 || eps > 0.6) {
         targetMood = MOOD_PALETTES.panic;
-      }
-      // MASTERY: Succeeding
-      else if (wr > 0.75) {
+      } else if (wr > 0.75) {
         targetMood = MOOD_PALETTES.mastery;
       } else {
         targetMood = MOOD_PALETTES.neutral;
