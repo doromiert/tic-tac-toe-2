@@ -147,6 +147,7 @@ export default function App() {
     wins: 0,
     losses: 0,
     draws: 0,
+    recentWinRate: 0,
   });
   const [randomTip, setRandomTip] = useState("");
   const [globalMood, setGlobalMood] = useState("neutral"); // 'neutral', 'victory', 'defeat'
