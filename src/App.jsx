@@ -4771,7 +4771,7 @@ export default function App() {
     gameMode,
     activePlayers = ["X", "O", "T", "S"],
   ) {
-    const DEBUG_AI = false;
+    const DEBUG_AI = true;
     // --- 1. MEMORY & PERSONALITY INITIALIZATION ---
     globalThis.aiMemories = globalThis.aiMemories || {};
     if (!globalThis.aiMemories[aiPiece]) {
@@ -5349,9 +5349,11 @@ export default function App() {
       for (let x = 0; x < cols; x++) {
         const cell = board[y][x];
         if (
+          !["neutral", "rot_cw", "rot_ccw", "dup", "void"].some(
+            (v) => v == cell.type,
+          ) &&
           !cell.piece &&
           !cell.dead &&
-          cell.type !== "void" &&
           !cell.mechanicalLock &&
           (cell.type !== "locked_letter" || cell.unlocked)
         ) {
