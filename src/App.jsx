@@ -13,7 +13,42 @@ import {
   onSnapshot,
   addDoc,
 } from "firebase/firestore";
+const MiniCell = React.memo(
+  ({ piece, heatmapValue, x, y, cols }) => {
+    // Calculate color once per change
+    const r = Math.floor(255 * (1 - heatmapValue));
+    const g = Math.floor(255 * heatmapValue);
+    const hasHighHeat = heatmapValue > 0.8;
 
+    return (
+      <div className="bg-slate-950 flex items-center justify-center p-[1px] relative">
+        {/* THE HEATMAP LAYER */}
+        <div
+          className="absolute inset-0 z-0 opacity-40"
+          style={{
+            backgroundColor: `rgb(${r}, ${g}, 0)`,
+            boxShadow: hasHighHeat ? "inset 0 0 4px #fff" : "none",
+            // Use will-change to hint to the browser to promote this to a GPU layer
+            willChange: "background-color",
+          }}
+        />
+
+        {piece && piece !== "N" && (
+          <img
+            src={`/icons/${piece}.svg`}
+            alt={piece}
+            style={{ height: "80%", width: "80%" }}
+            className="w-full h-full object-contain z-10 drop-shadow-sm"
+          />
+        )}
+      </div>
+    );
+  },
+  (prev, next) => {
+    // Custom equality check: only re-render if piece or heatmap value changed
+    return prev.piece === next.piece && prev.heatmapValue === next.heatmapValue;
+  },
+);
 // REPLACE THIS with your actual config from Firebase
 const firebaseConfig = {
   apiKey: "AIzaSyD3ZQ5HQOKuGL7JAzEeeOM1YDcJWHeOlH0",
@@ -3181,10 +3216,8 @@ export default function App() {
             // Memory Flush
             game.memory.forEach((m) => globalReplayBuffer.current.push(m));
             if (globalReplayBuffer.current.length > maxMemoryEntries) {
-              globalReplayBuffer.current.splice(
-                0,
-                globalReplayBuffer.current.length - maxMemoryEntries,
-              );
+              globalReplayBuffer.current =
+                globalReplayBuffer.current.slice(-maxMemoryEntries);
             }
 
             resetGameInPlace(game);
@@ -3292,14 +3325,19 @@ export default function App() {
 
           // --- MANUAL GPU MANAGEMENT ---
           // 1. Wrap the tensor creation and prediction
+          // --- Optimized Phase 2 ---
           const inputTensor = tf.tensor2d(globalContext, [
             totalNeuralMoves,
             81,
           ]);
           const predictionTensor = modelRef.current.predict(inputTensor);
 
-          // 2. Extract data to CPU
-          const scores = predictionTensor.dataSync();
+          // Non-blocking wait for GPU data
+          const scores = await predictionTensor.data();
+
+          // Cleanup remains synchronous and immediate
+          inputTensor.dispose();
+          predictionTensor.dispose();
 
           // 3. IMMEDIATELY KILL THE TENSORS
           inputTensor.dispose();
@@ -3499,8 +3537,13 @@ export default function App() {
         console.error("Simulation Error:", err);
       } finally {
         isCurrentlyPredicting.current = false;
-        // Only request the next frame once the current one is FINISHED
-        trainingLoopId.current = requestAnimationFrame(runSimulationStep);
+        // Use a slight delay (e.g., 10ms) instead of immediate RAF
+        // if the GPU usage is hitting 100%
+        setTimeout(() => {
+          if (isTraining.current) {
+            trainingLoopId.current = requestAnimationFrame(runSimulationStep);
+          }
+        }, 10);
       }
     };
 
@@ -3570,7 +3613,7 @@ export default function App() {
         // Pass the epsilon down so the UI displays the true rolling value
         setTrainingStats({ ...statsRef.current, epsilon: epsilonRef.current });
       }
-    }, 1000 / 15);
+    }, 500);
 
     startTraining();
 
@@ -4099,33 +4142,16 @@ export default function App() {
                 >
                   {game.board.map((row, y) =>
                     row.map((cell, x) => (
-                      <div
+                      <MiniCell
                         key={`${x}-${y}`}
-                        className="bg-slate-950 flex items-center justify-center p-[1px] relative"
-                      >
-                        {/* THE HEATMAP LAYER */}
-                        {game.heatmap && (
-                          <div
-                            className="absolute inset-0 z-0 opacity-40"
-                            style={{
-                              backgroundColor: `rgb(${255 * (1 - game.heatmap[y * cols + x])}, ${255 * game.heatmap[y * cols + x]}, 0)`,
-                              boxShadow:
-                                game.heatmap[y * cols + x] > 0.8
-                                  ? "inset 0 0 4px #fff"
-                                  : "none",
-                            }}
-                          />
-                        )}
-
-                        {cell.piece && (
-                          <img
-                            src={`/icons/${cell.piece}.svg`}
-                            alt={cell.piece}
-                            style={{ height: "80%", width: "80%" }}
-                            className="w-full h-full object-contain z-10 drop-shadow-sm"
-                          />
-                        )}
-                      </div>
+                        x={x}
+                        y={y}
+                        cols={cols}
+                        piece={cell.piece}
+                        heatmapValue={
+                          game.heatmap ? game.heatmap[y * cols + x] : 0
+                        }
+                      />
                     )),
                   )}
                 </div>
