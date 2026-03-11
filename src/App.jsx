@@ -128,6 +128,7 @@ export default function App() {
   }
   // --- TELEMETRY STATE ---
   const qTrackerRef = useRef(new QValueTracker(200));
+  const stepsSinceYieldRef = useRef(0);
   const episodeLengthsRef = useRef(new QValueTracker(100)); // Reusing logic for O(1) avg moves
   const [telemetry, setTelemetry] = useState({
     avgQ: 0,
@@ -3019,57 +3020,6 @@ export default function App() {
     const isPvpActive = currentGoalsRef.current.some(
       (g) => g.type === "standard",
     );
-    // --- HELPER: REBUILD LINES FOR HOLOGRAM ---
-    const extractWinningLines = (board, cols, rows) => {
-      const lines = [];
-      const dirs = [
-        [1, 0],
-        [0, 1],
-        [1, 1],
-        [1, -1],
-      ];
-      const colors = { X: "#22d3ee", O: "#fb7185", T: "#a855f7", S: "#facc15" };
-
-      for (let y = 0; y < rows; y++) {
-        for (let x = 0; x < cols; x++) {
-          const cell = board[y][x];
-          if (!cell.piece || !cell.dead) continue;
-
-          dirs.forEach(([dx, dy]) => {
-            let px = x - dx,
-              py = y - dy;
-            if (px >= 0 && px < cols && py >= 0 && py < rows) {
-              const pCell = board[py][px];
-              if (pCell.piece === cell.piece && pCell.dead) return;
-            }
-
-            let len = 1;
-            let cx = x + dx,
-              cy = y + dy;
-            while (cx >= 0 && cx < cols && cy >= 0 && cy < rows) {
-              const cCell = board[cy][cx];
-              if (cCell.piece === cell.piece && cCell.dead) {
-                len++;
-                cx += dx;
-                cy += dy;
-              } else break;
-            }
-
-            if (len >= 3) {
-              lines.push({
-                id: `holo-line-${x}-${y}-${dx}-${dy}`,
-                x1: x,
-                y1: y,
-                x2: x + dx * (len - 1),
-                y2: y + dy * (len - 1),
-                color: colors[cell.piece] || "#22d3ee",
-              });
-            }
-          });
-        }
-      }
-      return lines;
-    };
 
     // --- FAST RANDOM SAMPLER ---
     const sampleBatch = (buffer, batchSize) => {
@@ -3537,13 +3487,18 @@ export default function App() {
         console.error("Simulation Error:", err);
       } finally {
         isCurrentlyPredicting.current = false;
-        // Use a slight delay (e.g., 10ms) instead of immediate RAF
-        // if the GPU usage is hitting 100%
-        setTimeout(() => {
-          if (isTraining.current) {
-            trainingLoopId.current = requestAnimationFrame(runSimulationStep);
+
+        if (isTraining.current) {
+          stepsSinceYieldRef.current++;
+          // Yield to the UI thread only once every 5 steps
+          if (stepsSinceYieldRef.current >= 5) {
+            stepsSinceYieldRef.current = 0;
+            setTimeout(runSimulationStep, 0); // 0ms delay, just queues after render
+          } else {
+            // Run the next step immediately without yielding
+            runSimulationStep();
           }
-        }, 10);
+        }
       }
     };
 
@@ -5382,6 +5337,31 @@ export default function App() {
     }
     // --- 5. VALID MOVES & SIMULATION LOOP (SPITE & ET AWARE) ---
     let validMoves = [];
+    // 1. First, find all occupied cells to determine the "Active Zone"
+    const activeZone = new Set();
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        if (board[y][x].piece || board[y][x].dead) {
+          // Mark surrounding 5x5 grid (radius of 2) as active
+          for (let dy = -2; dy <= 2; dy++) {
+            for (let dx = -2; dx <= 2; dx++) {
+              if (
+                y + dy >= 0 &&
+                y + dy < rows &&
+                x + dx >= 0 &&
+                x + dx < cols
+              ) {
+                activeZone.add(`${x + dx},${y + dy}`);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // 2. Only check valid moves inside the Active Zone (fallback to all if board is empty)
+    const isBoardEmpty = activeZone.size === 0;
+
     for (let y = 0; y < rows; y++) {
       for (let x = 0; x < cols; x++) {
         const cell = board[y][x];
@@ -5392,7 +5372,9 @@ export default function App() {
           !cell.mechanicalLock &&
           (cell.type !== "locked_letter" || cell.unlocked)
         ) {
-          validMoves.push({ x, y });
+          if (isBoardEmpty || activeZone.has(`${x},${y}`)) {
+            validMoves.push({ x, y });
+          }
         }
       }
     }
