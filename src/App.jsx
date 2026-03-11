@@ -377,23 +377,6 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  setTimeout(() => {
-    const tips = [
-      "The neural bot learns by playing procedural bots, refining its strategy over time.",
-      "The 'curiosity' value (epsilon) starts high to encourage exploration and gradually decreases as the bot learns.",
-      "Parallel simulations allow the bot to experience a wide variety of game states, accelerating learning.",
-      "The heatmaps show which moves the neural bot considers most valuable in each state.",
-      "Training can be stopped at any time, and the current model can be saved for later use or further training.",
-      "Tic Tac Toe 2 was actually designed in 2022 when doromiert (the lead developer) was bored at school.",
-      "Tailwind is actually the devil but i only used it for this project because AIs have more training data with it.",
-      "The multiplayer mode uses Firebase Firestore as a signaling server to establish peer-to-peer WebRTC connections between players.",
-      "You can have up to four players (Cross, Circle, Triangle & Square) in the game, and the neural bot is always 'X' when training.",
-      "Procedural bots collect data on how you play and build a personalized strategy that the neural bot learns from, making it adapt to your playstyle over time.",
-    ];
-    const randomTip = tips[Math.floor(Math.random() * tips.length)];
-    setRandomTip(randomTip);
-  }, 50000);
-
   // --- HOST LOGIC ---
   const startMultiplayerHost = async () => {
     setIsHost(true);
@@ -4455,7 +4438,7 @@ export default function App() {
                       </h3>
                     </div>
 
-                    <div className="relative h-32 w-full flex justify-center overflow-hidden">
+                    <div className="relative min-h-[8rem] w-full flex justify-center py-4">
                       <AnimatePresence mode="wait">
                         <motion.div
                           key={tipIndex}
@@ -4466,7 +4449,7 @@ export default function App() {
                             duration: 0.6,
                             ease: [0.22, 1, 0.36, 1],
                           }}
-                          className="absolute inset-0 flex items-center justify-center px-8"
+                          className="flex items-center justify-center px-8"
                         >
                           <span className="text-white/60 font-mono text-sm leading-relaxed italic max-w-md">
                             "{tips[tipIndex]}"
