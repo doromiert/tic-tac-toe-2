@@ -128,6 +128,7 @@ export default function App() {
   }
   // --- TELEMETRY STATE ---
   const qTrackerRef = useRef(new QValueTracker(200));
+  const levelTemplateRef = useRef(null);
   const stepsSinceYieldRef = useRef(0);
   const episodeLengthsRef = useRef(new QValueTracker(100)); // Reusing logic for O(1) avg moves
   const [telemetry, setTelemetry] = useState({
@@ -661,7 +662,6 @@ export default function App() {
 
   const loadCampaign = (id) => {
     const selected = savedCampaigns.find((c) => c.id === id);
-    console.log(savedCampaigns, id, selected);
     if (selected) {
       setCampaign(selected.levels);
       setUnlockedLevels([0]); // Optional: Tie your hash-loading system here if needed
@@ -782,73 +782,6 @@ export default function App() {
       }
     }
     return context; // Returns raw memory, no GPU sync!
-  };
-
-  // Converts 2D board array to flat 1D tensor representation
-  // 1 = Neural Bot (X), -1 = Enemies (O, T, S), 0 = Empty/Void
-  const getBoardTensor = (boardState, myPiece = "X") => {
-    const flatBoard = [];
-    for (let y = 0; y < rows; y++) {
-      for (let x = 0; x < cols; x++) {
-        const cell = boardState[y][x];
-        if (!cell.piece || cell.type === "void" || cell.dead) flatBoard.push(0);
-        else if (cell.piece === myPiece) flatBoard.push(1);
-        else flatBoard.push(-1);
-      }
-    }
-    return tf.tensor2d([flatBoard]); // Shape [1, cols*rows]
-  };
-
-  // --- ULTRA-FAST BATCHED NEURAL MOVE ---
-  const getNeuralMove = (board, validMoves) => {
-    const numMoves = validMoves.length;
-    if (numMoves === 0) return null;
-
-    // 1. ALLOCATE ONE FLAT C++ STYLE BUFFER (Zero JS Array Overhead)
-    const batchContext = new Float32Array(numMoves * 81);
-
-    // 2. FILL THE BUFFER DIRECTLY
-    for (let i = 0; i < numMoves; i++) {
-      const move = validMoves[i];
-      let cIdx = i * 81; // Jump to the right 81-unit block for this move
-
-      for (let y = move.y - 4; y <= move.y + 4; y++) {
-        for (let x = move.x - 4; x <= move.x + 4; x++) {
-          if (y < 0 || y >= rows || x < 0 || x >= cols) {
-            batchContext[cIdx++] = -1.0; // Wall / Out of bounds
-          } else {
-            const cell = board[y][x];
-            if (cell.piece === "X") batchContext[cIdx++] = 1.0;
-            else if (cell.piece) batchContext[cIdx++] = -0.5;
-            else if (cell.type === "void" || cell.dead)
-              batchContext[cIdx++] = -1.0;
-            else batchContext[cIdx++] = 0.0;
-          }
-        }
-      }
-    }
-
-    let bestMove = validMoves[0];
-
-    // 3. ONE SINGLE GPU CALL FOR ALL MOVES
-    tf.tidy(() => {
-      // Because batchContext is a Float32Array, TFJS skips the .map() loop entirely!
-      const inputTensor = tf.tensor2d(batchContext, [numMoves, 81]);
-
-      // Score all moves simultaneously
-      const scores = modelRef.current.predict(inputTensor).dataSync();
-
-      // Find the highest score
-      let maxQ = -Infinity;
-      for (let i = 0; i < numMoves; i++) {
-        if (scores[i] > maxQ) {
-          maxQ = scores[i];
-          bestMove = validMoves[i];
-        }
-      }
-    });
-
-    return bestMove;
   };
 
   // Train the model on a batch of memories when a game ends
@@ -1089,14 +1022,10 @@ export default function App() {
         row.forEach((cell, x) => {
           const bl = [
             "dup",
-            "zap",
-            "mov",
             "rot_cw",
             "rot_ccw",
             "neutral",
-            "target",
             "void",
-            "switch",
             "locked_letter",
           ];
           if (!bl.includes(cell.type) && !cell.dead && !cell.piece)
@@ -1707,6 +1636,7 @@ export default function App() {
       }
 
       let cell = board[cy][cx];
+      if (cell.type === "trash") cell.piece = null;
       if (!overwrite && isBlocker(cell)) continue;
       if (
         cell.type === "void" ||
@@ -1738,8 +1668,6 @@ export default function App() {
       checkDup(0, 1, "d", 0, 2);
       checkDup(0, -1, "u", 0, -2);
 
-      if (cell.type === "trash") continue;
-
       if (!isSimMode && cell.piece && cell.dead && overwrite && cell.lineId) {
         linesToErase.add(cell.lineId);
       }
@@ -1758,7 +1686,12 @@ export default function App() {
       }
 
       if (rotation !== undefined) cell.rotation = rotation;
+      if (cell.type === "trash") {
+        cell.piece = null;
+        continue;
+      }
     }
+
     return { linesToErase, trails };
   };
 
@@ -2102,8 +2035,12 @@ export default function App() {
       let lineScore = 1;
       if (gameMode === "zone_control") {
         lineScore = 0;
+        // INSIDE simulateGameTick (Scoring Phase)
         line.seq.forEach((item) => {
-          if (b[item.y][item.x].isTarget) lineScore++;
+          if (board[item.y][item.x].type !== "neutral") {
+            board[item.y][item.x].dead = true; // [!] Set dead to true
+            // DO NOT DO: board[item.y][item.x].piece = null; <-- This breaks the snapshot!
+          }
         });
       }
       tempScores[line.player] += lineScore;
@@ -2149,17 +2086,7 @@ export default function App() {
           if (c.piece === "X") targetsFilled++;
         }
         if (!c.piece) {
-          if (
-            [
-              "empty",
-              "zap",
-              "mov",
-              "rot_cw",
-              "rot_ccw",
-              "flip",
-              "switch",
-            ].includes(c.type)
-          )
+          if (["empty", "zap", "mov", "flip", "switch"].includes(c.type))
             foundValidMove = true;
           if (c.type === "locked_letter" && c.unlocked) foundValidMove = true;
         }
@@ -2612,144 +2539,251 @@ export default function App() {
     resolveTurn(x, y);
   };
 
-  // --- PURE ENGINE FOR FAST SIMULATIONS ---
   const executePureTurn = (
     startX,
     startY,
     player,
-    board,
+    inputBoard, // Takes the current board state
     activePlayers,
     currentScores,
   ) => {
-    board[startY][startX].piece = player;
+    // 1. Deep clone the board so the neural simulation doesn't mutate reality
+    let b = inputBoard.map((row) => row.map((cell) => ({ ...cell })));
+    let tempScores = { ...currentScores };
+    let totalLinesToErase = new Set();
 
-    let pointsScoredThisTurn = 0;
+    // --- Phase 0: Mirror Protocol Initialization ---
+    let q = [{ x: startX, y: startY, piece: player, overwrite: false }];
+
+    if (gameMode === "mirror_protocol") {
+      let mx = cols - 1 - startX;
+      if (mx >= 0 && mx < cols) {
+        let mCell = b[startY][mx];
+        if (
+          !mCell.piece &&
+          !mCell.mechanicalLock &&
+          !["void", "locked_mech", "locked_letter"].includes(mCell.type)
+        ) {
+          q.push({ x: mx, y: startY, piece: player, overwrite: false });
+        }
+      }
+    }
+
+    // --- Phase 1: Placements ---
+    // Uses the real engine's placement resolver instead of manual assignment
+    let { linesToErase: initLines } = resolvePlacements(
+      q,
+      b,
+      cols,
+      rows,
+      activePlayers,
+      false,
+    );
+    initLines.forEach((l) => totalLinesToErase.add(l));
+
+    if (typeof updateSwitches === "function") updateSwitches(b);
+
+    // --- Phase 2: First Gravity ---
+    if (gameMode === "cascade" && typeof runGravity === "function") {
+      runGravity(b, null, false, cols, rows);
+    }
+
+    // --- Phase 3: Single Machine Tick ---
+    if (typeof tickMachines === "function") {
+      tickMachines(
+        b,
+        null,
+        false,
+        cols,
+        rows,
+        activePlayers,
+        totalLinesToErase,
+      );
+    }
+
+    if (typeof updateSwitches === "function") updateSwitches(b);
+
+    // --- Phase 4: Final Gravity ---
+    if (gameMode === "cascade" && typeof runGravity === "function") {
+      runGravity(b, null, false, cols, rows);
+    }
+
+    // --- Phase 5: Scoring Adjustments (Dead Pieces Deductions) ---
+    if (totalLinesToErase.size > 0) {
+      totalLinesToErase.forEach((id) => {
+        let owner = null;
+        b.forEach((row) =>
+          row.forEach((c) => {
+            if (c.lineId === id) {
+              owner = c.piece;
+              c.dead = false;
+              c.lineId = null;
+            }
+          }),
+        );
+        if (owner) tempScores[owner]--;
+      });
+    }
+
     let earnedExtraTurns = 0;
+    let linesFound = [];
     let newLines = [];
 
-    const axes = [
-      [
-        { dx: 1, dy: 0 },
-        { dx: -1, dy: 0 },
-      ], // Horizontal
-      [
-        { dx: 0, dy: 1 },
-        { dx: 0, dy: -1 },
-      ], // Vertical
-      [
-        { dx: 1, dy: 1 },
-        { dx: -1, dy: -1 },
-      ], // Diagonal Down (\)
-      [
-        { dx: 1, dy: -1 },
-        { dx: -1, dy: 1 },
-      ], // Diagonal Up (/)
-    ];
+    // --- Phase 6: Line Detection ---
+    const checkLine = (startX, startY, dx, dy) => {
+      let run = [];
+      let cx = startX,
+        cy = startY;
 
-    axes.forEach((axis) => {
-      let lineLength = 1;
-      let seq = [{ x: startX, y: startY, cell: board[startY][startX] }];
+      const scoreRun = () => {
+        activePlayers.forEach((p) => {
+          let currentSeq = [];
+          run.forEach((item) => {
+            let piece = item.cell.piece;
+            let isDead = item.cell.dead;
+            let isWild = item.cell.type === "neutral";
 
-      axis.forEach((dir) => {
-        let cx = startX;
-        let cy = startY;
-
-        while (true) {
-          let nextX = cx + dir.dx;
-          let nextY = cy + dir.dy;
-
-          if (nextX < 0 || nextX >= cols || nextY < 0 || nextY >= rows) break;
-
-          let currentCell = board[cy][cx];
-          let nextCell = board[nextY][nextX];
-
-          // STRICT WALL COLLISIONS (Both Directions)
-          let blocked = false;
-          if (dir.dx === 1 && dir.dy === 0 && currentCell.walls?.r)
-            blocked = true;
-          if (dir.dx === -1 && dir.dy === 0 && nextCell.walls?.r)
-            blocked = true;
-          if (dir.dx === 0 && dir.dy === 1 && currentCell.walls?.b)
-            blocked = true;
-          if (dir.dx === 0 && dir.dy === -1 && nextCell.walls?.b)
-            blocked = true;
-          if (dir.dx === 1 && dir.dy === 1 && board[cy][nextX].walls?.bl)
-            blocked = true;
-          if (dir.dx === -1 && dir.dy === -1 && board[nextY][cx].walls?.bl)
-            blocked = true;
-          if (dir.dx === -1 && dir.dy === 1 && board[cy][nextX].walls?.br)
-            blocked = true;
-          if (dir.dx === 1 && dir.dy === -1 && board[nextY][cx].walls?.br)
-            blocked = true;
-
-          if (blocked) break;
-
-          // VALIDITY CHECK (No dead pieces!)
-          if (nextCell.dead || nextCell.type === "void") break;
-          if (nextCell.piece !== player && nextCell.type !== "neutral") break;
-
-          lineLength++;
-          seq.push({ x: nextX, y: nextY, cell: nextCell });
-          cx = nextX;
-          cy = nextY;
-        }
-      });
-
-      if (lineLength >= 3) {
-        pointsScoredThisTurn += 1;
-        earnedExtraTurns += Math.max(0, lineLength - 3);
-
-        seq.forEach((pos) => {
-          if (pos.cell.type !== "neutral") pos.cell.dead = true;
+            if (!isDead && (piece === p || isWild)) {
+              currentSeq.push(item);
+            } else {
+              evalSeq(currentSeq, p);
+              currentSeq = [];
+            }
+          });
+          evalSeq(currentSeq, p);
         });
+      };
 
-        // Geometrically sort the sequence to get perfect start/end SVG coordinates
-        seq.sort((a, b) => a.x - b.x || a.y - b.y);
-        const colors = {
-          X: "#22d3ee",
-          O: "#fb7185",
-          T: "#34d399",
-          S: "#fbbf24",
-        };
+      const evalSeq = (seq, p) => {
+        let firstIdx = seq.findIndex((i) => i.cell.piece === p);
+        let lastIdx = seq.findLastIndex((i) => i.cell.piece === p);
+        if (firstIdx !== -1 && lastIdx !== -1 && lastIdx - firstIdx + 1 >= 3) {
+          linesFound.push({ player: p, seq: seq.slice(firstIdx, lastIdx + 1) });
+        }
+      };
 
-        newLines.push({
-          id: Math.random().toString(36).substring(2, 9),
-          x1: seq[0].x,
-          y1: seq[0].y,
-          x2: seq[seq.length - 1].x,
-          y2: seq[seq.length - 1].y,
-          color: colors[player] || "#22d3ee",
+      while (cx >= 0 && cx < cols && cy >= 0 && cy < rows) {
+        let cell = b[cy][cx];
+
+        if (cell.type === "void") {
+          scoreRun();
+          run = [];
+          cx += dx;
+          cy += dy;
+          continue;
+        }
+
+        let nextX = cx + dx,
+          nextY = cy + dy;
+        let blocked = false;
+
+        // Exactly mimics resolveTurn wall collisions
+        if (nextX >= 0 && nextX < cols && nextY >= 0 && nextY < rows) {
+          if (dx === 1 && dy === 0 && cell.walls?.r) blocked = true;
+          if (dx === 0 && dy === 1 && cell.walls?.b) blocked = true;
+          if (dx === 1 && dy === 1 && b[cy]?.[nextX]?.walls?.bl) blocked = true;
+          if (dx === -1 && dy === 1 && b[cy]?.[nextX]?.walls?.br)
+            blocked = true;
+        } else {
+          blocked = true;
+        }
+
+        run.push({ x: cx, y: cy, cell });
+        if (blocked) {
+          scoreRun();
+          run = [];
+        }
+        cx = nextX;
+        cy = nextY;
+      }
+      if (run.length > 0) scoreRun();
+    };
+
+    // Sweep all 4 axes
+    for (let y = 0; y < rows; y++) checkLine(0, y, 1, 0);
+    for (let x = 0; x < cols; x++) checkLine(x, 0, 0, 1);
+    for (let y = 0; y < rows; y++) checkLine(0, y, 1, 1);
+    for (let x = 1; x < cols; x++) checkLine(x, 0, 1, 1);
+    for (let y = 0; y < rows; y++) checkLine(cols - 1, y, -1, 1);
+    for (let x = 0; x < cols - 1; x++) checkLine(x, 0, -1, 1);
+
+    // --- Phase 7: Score Resolution & Combos ---
+    let pointsScoredThisTurn = 0;
+    let maxComboThisTurn = 0;
+
+    linesFound.forEach((line) => {
+      const lId = Math.random().toString(36).substr(2, 9);
+      let lineScore = 1;
+
+      // Match real zone control rules
+      if (gameMode === "zone_control") {
+        lineScore = 0;
+        line.seq.forEach((item) => {
+          if (b[item.y][item.x].type !== "neutral") {
+            b[item.y][item.x].dead = true;
+            if (b[item.y][item.x].isTarget) lineScore++;
+          }
         });
       }
+
+      tempScores[line.player] += lineScore;
+
+      if (line.player === player) {
+        pointsScoredThisTurn++;
+        let longLineBonus = Math.max(0, line.seq.length - 3);
+        earnedExtraTurns += longLineBonus;
+        maxComboThisTurn = Math.max(maxComboThisTurn, longLineBonus);
+      }
+
+      line.seq.forEach((item) => {
+        if (b[item.y][item.x].type !== "neutral") b[item.y][item.x].dead = true;
+        b[item.y][item.x].lineId = lId;
+      });
+
+      const colors = { X: "#22d3ee", O: "#fb7185", T: "#34d399", S: "#fbbf24" };
+      newLines.push({
+        id: lId,
+        x1: line.seq[0].x,
+        y1: line.seq[0].y,
+        x2: line.seq[line.seq.length - 1].x,
+        y2: line.seq[line.seq.length - 1].y,
+        color: colors[line.player] || "#ffffff",
+      });
     });
 
     if (pointsScoredThisTurn > 1) earnedExtraTurns += pointsScoredThisTurn - 1;
-    currentScores[player] += pointsScoredThisTurn;
 
-    let matchOver = true;
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        let cell = board[r][c];
-        if (
-          !["void", "locked_mech", "dup", "neutral", "locked_letter"].includes(
-            cell.type,
-          ) &&
-          !cell.mechanicalLock &&
-          !cell.piece
-        ) {
-          matchOver = false;
-          break;
+    // --- Phase 8: Match Over (isFull) Verification ---
+    let foundValidMove = false;
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const c = b[y][x];
+        if (c.type === "void") continue;
+        if (!c.piece) {
+          if (
+            ["empty", "zap", "mov", "flip", "switch"].includes(
+              c.type || "empty",
+            )
+          ) {
+            foundValidMove = true;
+          }
+          if (c.type === "locked_letter" && c.unlocked) {
+            foundValidMove = true;
+          }
         }
       }
-      if (!matchOver) break;
     }
 
+    let matchOver = !foundValidMove;
+
     return {
-      board,
-      scores: currentScores,
+      board: b,
+      scores: tempScores,
       matchOver,
       extraTurns: earnedExtraTurns,
+      maxComboThisTurn,
       newLines,
+      pointsScored: pointsScoredThisTurn, // Passed back in case the reward system needs it
     };
   };
 
@@ -2790,7 +2824,6 @@ export default function App() {
   const loadLevel = (levelData) => {
     setGameMode(levelData.gameMode || "standard");
     console.log("Loading level with data:", levelData);
-    console.log(gameMode);
     setCols(levelData.cols || levelData.gridSize || 9);
     setRows(levelData.rows || levelData.gridSize || 9);
     setBoard(levelData.board.map((row) => row.map((cell) => ({ ...cell }))));
@@ -2932,6 +2965,7 @@ export default function App() {
           "dup",
           "rot_cw",
           "rot_ccw",
+          "neutral",
         ].includes(c.type);
 
         // 3. Conditional Locks: Letter locks must be 'unlocked'
@@ -3027,41 +3061,63 @@ export default function App() {
       if (!modelRef.current) await initializeModel();
       isTraining.current = true;
 
-      // Initialize the dynamic EMA tracker safely
       if (statsRef.current.recentWinRate === undefined) {
         statsRef.current.recentWinRate = 0.0;
       }
 
+      const template = levelTemplateRef.current;
+
       gamesRef.current = Array.from({ length: parallelCount }, () => ({
-        board: createEmptyBoard(cols, rows),
+        board: template
+          ? template.map((row) => row.map((cell) => ({ ...cell })))
+          : createEmptyBoard(cols, rows),
         turn: "X",
         status: "active",
         moves: 0,
         memory: [],
-        lastScore: 0,
+        lastScoreX: 0,
+        lastScoreO: 0,
+        lastScoreT: 0,
+        lastScoreS: 0,
         scores: { X: 0, O: 0, T: 0, S: 0 },
         lines: [],
+        extraTurns: 0,
+        maxComboAchieved: 0,
+        targetsTotal: 0,
+        targetsFilled: 0,
       }));
 
       runSimulationStep();
     };
 
     const resetGameInPlace = (game) => {
+      const template = levelTemplateRef.current;
+
       for (let y = 0; y < rows; y++) {
         for (let x = 0; x < cols; x++) {
           const cell = game.board[y][x];
-          cell.piece = null; // Ensure this is null
-          cell.dead = false; // Ensure this is false
-          cell.mechanicalLock = false;
+          if (template && template[y] && template[y][x]) {
+            const tCell = template[y][x];
+            cell.type = tCell.type;
+            cell.dead = tCell.dead;
+            cell.isTarget = tCell.isTarget;
+            cell.mechanicalLock = tCell.mechanicalLock;
+            cell.locked_letter = tCell.locked_letter;
+          } else {
+            cell.type = "empty";
+            cell.dead = false;
+            cell.mechanicalLock = false;
+            if (cell.locked_letter) cell.locked_letter = null;
+          }
+
+          cell.piece = null;
           cell.unlocked = false;
           cell.lineId = null;
-          if (cell.locked_letter) cell.locked_letter = null;
         }
       }
       game.turn = "X";
       game.status = "active";
       game.moves = 0;
-      game.lastScore = 0;
       game.lines.length = 0;
       if (!game.scores) game.scores = { X: 0, O: 0, T: 0, S: 0 };
       else {
@@ -3071,6 +3127,15 @@ export default function App() {
         game.scores.S = 0;
       }
       game.memory.length = 0;
+      game.lastScoreX = 0;
+      game.lastScoreO = 0;
+      game.lastScoreT = 0;
+      game.lastScoreS = 0;
+
+      game.extraTurns = 0;
+      game.maxComboAchieved = 0;
+      game.targetsTotal = 0;
+      game.targetsFilled = 0;
     };
 
     // --- THE ULTIMATE MATH LOOP (GLOBAL INFERENCE BATCHING) ---
@@ -3083,12 +3148,11 @@ export default function App() {
       let totalNeuralMoves = 0;
 
       try {
-        // --- PHASE 1: QUEUE & CLEANUP (Start of Step) ---
+        // --- PHASE 1: QUEUE & CLEANUP ---
         for (let i = 0; i < parallelCount; i++) {
           let game = gamesRef.current[i];
 
           if (game.status !== "active") {
-            // Stats & Snapshots
             episodeLengthsRef.current.add(game.moves);
             if (game.scores.X > bestScoreRef.current) {
               bestScoreRef.current = game.scores.X;
@@ -3096,7 +3160,7 @@ export default function App() {
                 board: game.board.map((row) =>
                   row.map((cell) => ({ ...cell })),
                 ),
-                score: game.scores.X,
+                scores: { ...game.scores },
                 moves: game.moves,
                 cols,
                 rows,
@@ -3105,7 +3169,6 @@ export default function App() {
               });
             }
 
-            // Global Metrics Update
             const resVal =
               game.status === "won" ? 1.0 : game.status === "draw" ? 0.2 : 0.0;
             statsRef.current.recentWinRate =
@@ -3115,7 +3178,6 @@ export default function App() {
             else if (game.status === "lost") statsRef.current.losses++;
             else statsRef.current.draws++;
 
-            // Epsilon Adrenaline Logic
             globalEpsilonRef.current = Math.max(
               MIN_EPSILON,
               globalEpsilonRef.current * DECAY_RATE,
@@ -3126,7 +3188,6 @@ export default function App() {
               globalEpsilonRef.current + panic * 0.5,
             );
 
-            // Campaign Progression (10 wins to advance)
             if (campaignStateRef.current.isActive && game.status === "won") {
               campaignStateRef.current.wins++;
               setCampaignWins(campaignStateRef.current.wins);
@@ -3139,14 +3200,16 @@ export default function App() {
                   setCampaignWins(0);
                   setCols(lvl.cols || 9);
                   setRows(lvl.rows || 9);
-                  globalReplayBuffer.current.length = 0; // Fresh brain for fresh mechanics
+                  globalReplayBuffer.current.length = 0;
                   campaignStateRef.current.wins = 0;
                   campaignStateRef.current.currentIndex = nIdx;
+
+                  bestScoreRef.current = -Infinity;
+                  setBestGameSnapshot(null);
                 }
               }
             }
 
-            // Memory Flush
             game.memory.forEach((m) => globalReplayBuffer.current.push(m));
             if (globalReplayBuffer.current.length > maxMemoryEntries) {
               globalReplayBuffer.current =
@@ -3157,7 +3220,6 @@ export default function App() {
             currentEpochRef.current++;
             setTrainingEpoch((e) => e + 1);
 
-            // Training Trigger
             if (
               !isCurrentlyFitting.current &&
               globalReplayBuffer.current.length > 128
@@ -3172,23 +3234,15 @@ export default function App() {
             continue;
           }
 
-          // Generate Moves
           let valid = getValidMoves(game, rows, cols);
 
-          // Handle game end BEFORE asking the Neural Network for a move
           const finalStatus = resolveGameStatus(game, valid.length);
           if (finalStatus !== "active") {
             game.status = finalStatus;
-            // Calculate final reward based on status
-            const finalReward =
-              finalStatus === "won" ? 5.0 : finalStatus === "draw" ? 0.5 : -2.0;
-
-            // Memory flush and reset logic here...
             resetGameInPlace(game);
             continue;
           }
 
-          // Proceed to Neural Tasks only if status is "active"
           if (game.turn === "X") {
             activeNeuralTasks.push({
               game,
@@ -3209,6 +3263,7 @@ export default function App() {
                   trainingPlayers,
                 )
               : null;
+
             if (move) {
               const res = executePureTurn(
                 move.x,
@@ -3220,13 +3275,25 @@ export default function App() {
               );
               game.board = res.board;
               game.scores = res.scores;
-              if (res.newLines.length > 0) game.lines.push(...res.newLines);
-              if (res.extraTurns === 0) {
+
+              if (res.newLines && res.newLines.length > 0)
+                game.lines.push(...res.newLines);
+
+              const combo = res.maxComboThisTurn || 0;
+              game.maxComboAchieved = Math.max(game.maxComboAchieved, combo);
+
+              const extraEarned = res.extraTurns || 0;
+              let totalExtra = game.extraTurns + extraEarned;
+
+              if (totalExtra > 0) {
+                game.extraTurns = totalExtra - 1;
+              } else {
+                game.extraTurns = 0;
                 const idx = trainingPlayers.indexOf(game.turn);
                 game.turn = trainingPlayers[(idx + 1) % trainingPlayers.length];
               }
             } else {
-              game.turn = "X"; // Solo mode fallback
+              game.turn = "X";
             }
           }
         }
@@ -3236,54 +3303,56 @@ export default function App() {
           const globalContext = new Float32Array(totalNeuralMoves * 81);
           let ptr = 0;
 
-          // Context building remains the same (it's pure JS, no GPU yet)
           activeNeuralTasks.forEach((t) => {
             t.validMoves.forEach((m) => {
               for (let y = m.y - 4; y <= m.y + 4; y++) {
                 for (let x = m.x - 4; x <= m.x + 4; x++) {
-                  if (y < 0 || y >= rows || x < 0 || x >= cols)
+                  if (y < 0 || y >= rows || x < 0 || x >= cols) {
                     globalContext[ptr++] = -1.0;
-                  else {
+                  } else {
                     const c = t.game.board[y][x];
-                    if (c.piece === "X") globalContext[ptr++] = 1.0;
-                    else if (c.piece) globalContext[ptr++] = -0.5;
-                    else if (c.type === "void" || c.dead)
-                      globalContext[ptr++] = -1.0;
-                    else globalContext[ptr++] = 0.0;
+
+                    // 1. Define tiles that the bot is FORBIDDEN from touching
+                    const isInvalidTarget =
+                      [
+                        "void",
+                        "neutral",
+                        "dup",
+                        "rot_cw",
+                        "rot_ccw",
+                        "locked_mech",
+                      ].includes(c.type) || c.dead;
+
+                    // 2. Map the context
+                    if (c.piece === "X") {
+                      globalContext[ptr++] = 1.0; // Self
+                    } else if (c.piece) {
+                      globalContext[ptr++] = -0.5; // Opponent
+                    } else if (isInvalidTarget) {
+                      globalContext[ptr++] = -1.0; // [FIX]: Mark machine/dead tiles as Obstacles
+                    } else if (c.mechanicalLock && !c.unlocked) {
+                      globalContext[ptr++] = -1.0; // [FIX]: Mark locked tiles as Obstacles
+                    } else {
+                      globalContext[ptr++] = 0.0; // Valid Empty Floor
+                    }
                   }
                 }
               }
             });
           });
 
-          // --- MANUAL GPU MANAGEMENT ---
-          // 1. Wrap the tensor creation and prediction
-          // --- Optimized Phase 2 ---
           const inputTensor = tf.tensor2d(globalContext, [
             totalNeuralMoves,
             81,
           ]);
           const predictionTensor = modelRef.current.predict(inputTensor);
-
-          // Non-blocking wait for GPU data
           const scores = await predictionTensor.data();
 
-          // Cleanup remains synchronous and immediate
-          inputTensor.dispose();
-          predictionTensor.dispose();
-
-          // 3. IMMEDIATELY KILL THE TENSORS
           inputTensor.dispose();
           predictionTensor.dispose();
 
           // --- PHASE 3: RESOLVE ---
           activeNeuralTasks.forEach((task) => {
-            // 1. EMERGENCY ESCAPE: If no moves exist, force end-state evaluation
-            // if (!task.validMoves || task.validMoves.length === 0) {
-            //   task.game.status = "draw";
-            //   return;
-            // }
-
             let best = task.validMoves[0],
               maxQ = -Infinity;
 
@@ -3295,7 +3364,6 @@ export default function App() {
               }
             }
 
-            // Epsilon-greedy
             if (Math.random() < epsilonRef.current) {
               best =
                 task.validMoves[
@@ -3305,7 +3373,6 @@ export default function App() {
 
             if (!best) return;
 
-            // Capture state before move
             const patchBefore = getLocal9x9Context(
               task.game.board,
               best.x,
@@ -3324,46 +3391,66 @@ export default function App() {
               task.game.scores,
             );
 
-            // Update game state
             task.game.board = res.board;
             task.game.scores = res.scores;
             task.game.moves++;
-            if (res.newLines.length > 0) task.game.lines.push(...res.newLines);
+            if (res.newLines && res.newLines.length > 0)
+              task.game.lines.push(...res.newLines);
 
-            // Reward Shaping
-            let reward = -0.01; // Tiny step penalty
+            const combo = res.maxComboThisTurn || 0;
+            const extraEarned = res.extraTurns || 0;
+            task.game.maxComboAchieved = Math.max(
+              task.game.maxComboAchieved,
+              combo,
+            );
+
+            let targetsTotal = 0;
+            let targetsFilled = 0;
+            task.game.board.forEach((row) =>
+              row.forEach((c) => {
+                if (c.isTarget) {
+                  targetsTotal++;
+                  if (c.piece === "X") targetsFilled++;
+                }
+              }),
+            );
+            const targetsGained = Math.max(
+              0,
+              targetsFilled - task.game.targetsFilled,
+            );
+            task.game.targetsTotal = targetsTotal;
+            task.game.targetsFilled = targetsFilled;
+
+            let reward = -0.01;
             const pGained = task.game.scores.X - (task.game.lastScoreX || 0);
             const eGained =
               task.game.scores.O -
               (task.game.lastScoreO || 0) +
               (task.game.scores.T - (task.game.lastScoreT || 0));
-            reward += pGained * 1.5 - eGained * 2.0; // Prioritize blocking
-            if (res.extraTurns > 0) reward += 0.5;
 
-            let isAvailableMoves = task.game.board.some((row) =>
-              row.some((cell) => {
-                // 1. Is the spot occupied?
-                // If there's a piece or it's 'dead', it's NOT available.
-                console.log(cell);
-                if (cell.piece || cell.dead) return false;
+            reward += pGained * 1.5 - eGained * 2.0;
 
-                // 2. Is it a valid floor?
-                // We'll allow "empty" OR any cell that doesn't have a type defined (fallback)
-                const isFloor =
-                  !cell.type || ["empty", "zap", "mov"].includes(cell.type);
-                if (!isFloor) return false;
+            if (extraEarned > 0) reward += 0.5;
+            if (combo > 0) reward += combo * 0.5;
+            if (targetsGained > 0) reward += targetsGained * 2.0;
 
-                // 3. The Lock Logic (The "P14" Correction)
-                // Available if: NO mechanical lock OR (Locked + Unlocked)
-                const isAccessible =
-                  !cell.mechanicalLock || (cell.locked_letter && cell.unlocked);
+            // [ PARITY FIX ]: Exactly match resolveTurn's `isFull` logic
+            let isAvailableMoves = false;
+            task.game.board.forEach((row) => {
+              row.forEach((c) => {
+                if (c.type === "void") return;
+                if (!c.piece) {
+                  if (
+                    ["empty", "zap", "mov", "flip", "switch"].includes(c.type)
+                  )
+                    isAvailableMoves = true;
+                  if (c.type === "locked_letter" && c.unlocked)
+                    isAvailableMoves = true;
+                }
+              });
+            });
 
-                return isAccessible;
-              }),
-            );
-
-            // Determine if this is a competitive mode
-            const isStandardPvp = currentGoalsRef.current.some(
+            let requiresFullBoard = currentGoalsRef.current.some(
               (g) => g.type === "standard",
             );
             let forcedEnd = currentGoalsRef.current.some(
@@ -3372,72 +3459,64 @@ export default function App() {
                 g.mode === "end" &&
                 task.game.moves >= g.target,
             );
+
             let isEndState = !isAvailableMoves || forcedEnd;
             let allMet = true;
             let anyFailed = false;
 
-            // 1. Check Specific Goals (Moves, Max Scores, etc.)
+            // [ PARITY FIX ]: Exactly mirror resolveTurn's goal evaluation
             currentGoalsRef.current.forEach((g) => {
-              if (g.type === "min_score" && task.game.scores.X < g.target) {
-                allMet = false;
-                if (isEndState) anyFailed = true;
-              }
-              if (g.type === "min_score" && task.game.scores.X < g.target) {
-                allMet = false;
-                if (isEndState) anyFailed = true;
-              }
-              if (g.type === "exact_score" && task.game.scores.X !== g.target) {
-                allMet = false;
-                if (isEndState) anyFailed = true;
-              }
-              if (g.type === "max_score" && task.game.scores.X > g.target) {
-                anyFailed = true;
-              }
-              if (
-                g.type === "max_moves" &&
-                task.game.moves > g.target &&
-                g.mode !== "end"
-              ) {
-                anyFailed = true;
+              if (g.type === "standard") {
+                let aiMax = 0;
+                trainingPlayers.forEach((p) => {
+                  if (p !== "X" && task.game.scores[p] > aiMax)
+                    aiMax = task.game.scores[p];
+                });
+                if (isEndState && task.game.scores.X <= aiMax) {
+                  anyFailed = true;
+                }
+                if (!isEndState) allMet = false;
+              } else if (g.type === "exact_score") {
+                if (task.game.scores.X !== g.target) allMet = false;
+                if (isEndState && task.game.scores.X !== g.target)
+                  anyFailed = true;
+              } else if (g.type === "min_score") {
+                if (task.game.scores.X < g.target) allMet = false;
+                if (isEndState && task.game.scores.X < g.target)
+                  anyFailed = true;
+              } else if (g.type === "max_score") {
+                if (task.game.scores.X > g.target) anyFailed = true;
+              } else if (g.type === "fill_targets") {
+                if (targetsTotal === 0 || targetsFilled < targetsTotal)
+                  allMet = false;
+                if (
+                  isEndState &&
+                  (targetsTotal === 0 || targetsFilled < targetsTotal)
+                )
+                  anyFailed = true;
+              } else if (g.type === "min_combo") {
+                if (task.game.maxComboAchieved < g.target) allMet = false;
+                if (isEndState && task.game.maxComboAchieved < g.target)
+                  anyFailed = true;
+              } else if (g.type === "max_moves") {
+                if (
+                  task.game.moves > g.target &&
+                  (!g.mode || g.mode === "fail")
+                )
+                  anyFailed = true;
               }
             });
-            if (isStandardPvp && isEndState) {
-              const scores = task.game.scores;
-              // Check if any other player has a score >= X
-              const others = ["O", "T", "S"].filter((p) =>
-                trainingPlayers.includes(p),
-              );
-              const outscoredByOpponent = others.some(
-                (p) => scores[p] >= scores.X,
-              );
 
-              if (outscoredByOpponent) {
-                allMet = false; // Even if min_score met, you didn't "win" the match
-              }
-            }
-
-            if (isEndState) {
-              const scores = task.game.scores;
-              const highestOpponent = Math.max(
-                scores.O || 0,
-                scores.T || 0,
-                scores.S || 0,
-              );
-
-              if (anyFailed) {
-                task.game.status = "lost";
-                reward = -5.0;
-              } else if (scores.X > highestOpponent) {
-                task.game.status = "won";
-                reward = 5.0;
-              } else if (scores.X === highestOpponent) {
-                task.game.status = "draw";
-                // Lower the reward for a draw so it doesn't prefer draws over trying to win
-                reward = 0.1;
-              } else {
-                task.game.status = "lost";
-                reward = -2.0;
-              }
+            // [ PARITY FIX ]: Final win/loss determination block based on matchOver
+            if (anyFailed) {
+              task.game.status = "lost";
+              reward -= 5.0;
+            } else if (allMet && (!requiresFullBoard || isEndState)) {
+              task.game.status = "won";
+              reward += 5.0;
+            } else if (isEndState) {
+              task.game.status = "lost";
+              reward -= 2.0;
             }
 
             // Save Memory
@@ -3457,12 +3536,28 @@ export default function App() {
 
             task.game.lastScoreX = task.game.scores.X;
             task.game.lastScoreO = task.game.scores.O;
+            task.game.lastScoreT = task.game.scores.T;
+            task.game.lastScoreS = task.game.scores.S;
 
-            if (res.extraTurns === 0 && task.game.status === "active") {
-              // FIX: Changed 'game.turn' to 'task.game.turn'
-              const idx = trainingPlayers.indexOf(task.game.turn);
-              task.game.turn =
-                trainingPlayers[(idx + 1) % trainingPlayers.length];
+            // [ PARITY FIX ]: Fallback correctly to 'X' for solo campaigns
+            if (task.game.status === "active") {
+              let totalExtra = task.game.extraTurns + extraEarned;
+              if (totalExtra > 0) {
+                task.game.extraTurns = totalExtra - 1;
+              } else {
+                task.game.extraTurns = 0;
+
+                if (
+                  (appMode === "solo" || appMode === "campaign") &&
+                  !requiresFullBoard
+                ) {
+                  task.game.turn = "X";
+                } else {
+                  const idx = trainingPlayers.indexOf(task.game.turn);
+                  task.game.turn =
+                    trainingPlayers[(idx + 1) % trainingPlayers.length];
+                }
+              }
             }
           });
         }
@@ -3473,12 +3568,10 @@ export default function App() {
 
         if (isTraining.current) {
           stepsSinceYieldRef.current++;
-          // Yield to the UI thread only once every 5 steps
           if (stepsSinceYieldRef.current >= 5) {
             stepsSinceYieldRef.current = 0;
-            setTimeout(runSimulationStep, 0); // 0ms delay, just queues after render
+            setTimeout(runSimulationStep, 0);
           } else {
-            // Run the next step immediately without yielding
             runSimulationStep();
           }
         }
@@ -3504,25 +3597,19 @@ export default function App() {
         )}, ${Math.round(b1 + (b2 - b1) * factor)}, ${a1 + (a2 - a1) * factor})`;
       };
 
-      // ==========================================
-      // 🎨 NEW DYNAMIC COLORS USING EMA
-      // ==========================================
-      // Instead of all-time winRate, we use the rolling recentWinRate.
-      // A win rate of 50% (0.5) against a bot is often considered "good"
-      // in early RL, so we multiply by 2.0 to scale the mood factor appropriately.
       const currentRecentWR = statsRef.current.recentWinRate || 0;
       const moodFactor = Math.min(Math.max(currentRecentWR * 2.0, 0), 1);
 
       if (currentEpochRef.current % 30 === 0) {
         setGlobalMood({
           primary: lerpColor(
-            "rgba(244, 63, 94, 0.3)", // Panicked Red
-            "rgba(6, 182, 212, 0.3)", // Confident Cyan
+            "rgba(244, 63, 94, 0.3)",
+            "rgba(6, 182, 212, 0.3)",
             moodFactor,
           ),
           secondary: lerpColor(
-            "rgba(251, 146, 60, 0.2)", // Stressed Orange
-            "rgba(16, 185, 129, 0.2)", // Relaxed Emerald
+            "rgba(251, 146, 60, 0.2)",
+            "rgba(16, 185, 129, 0.2)",
             moodFactor,
           ),
         });
@@ -3548,7 +3635,6 @@ export default function App() {
           })();
         }
 
-        // Pass the epsilon down so the UI displays the true rolling value
         setTrainingStats({ ...statsRef.current, epsilon: epsilonRef.current });
       }
     }, 500);
@@ -3726,24 +3812,29 @@ export default function App() {
                   className="hidden"
                   onChange={(e) =>
                     handleLevelImport(e, (d) => {
-                      console.log("Loaded training level data:", d);
-                      setGameMode(d.gameMode || "standard");
+                      isTraining.current = false;
+
+                      // 1. Create a deep copy of the incoming board immediately
+                      const freshBoard = d.board.map((row) =>
+                        row.map((cell) => ({ ...cell })),
+                      );
+
+                      // 2. Sync the Ref IMMEDIATELY with the raw data
+                      levelTemplateRef.current = freshBoard;
+
+                      // 3. Update React State for the UI/Re-mount
                       setCols(d.cols || d.gridSize || 9);
                       setRows(d.rows || d.gridSize || 9);
-                      setBoard(
-                        levelData.board.map((row) =>
-                          row.map((cell) => ({ ...cell })),
-                        ),
-                      );
-                      setCurrentGoals(
+                      setGameMode(d.gameMode || "standard");
+                      setBoard(freshBoard);
+
+                      currentGoalsRef.current =
                         d.goals ||
-                          (d.goal
-                            ? [d.goal]
-                            : [{ type: "standard", target: 0 }]),
-                      );
-                      setAiBehavior(d.aiBehavior || "standard");
-                      alert(
-                        `Environment loaded: ${d.cols || d.gridSize || 9}x${d.rows || d.gridSize || 9} ${d.gameMode || "standard"}`,
+                        (d.goal ? [d.goal] : [{ type: "standard", target: 0 }]);
+
+                      console.log(
+                        "Master Template Synced:",
+                        levelTemplateRef.current,
                       );
                     })
                   }
@@ -4464,8 +4555,15 @@ export default function App() {
                 {bestGameSnapshot && (
                   <div className="justify-center flex  flex-col gap-4 items-center opacity-80 mix-blend-screen pointer-events-none">
                     <div className="text-[10px] text-cyan-300 font-mono font-bold tracking-widest uppercase flex items-center gap-2">
-                      GEN-{bestGameSnapshot.epoch + 1} | Highest Score:{" "}
-                      {bestGameSnapshot.score} ({bestGameSnapshot.moves} Moves)
+                      GEN-{bestGameSnapshot.epoch + 1} | Score: X:{" "}
+                      {bestGameSnapshot.scores.X} O: {bestGameSnapshot.scores.O}{" "}
+                      {bestGameSnapshot.scores.T
+                        ? `T: ${bestGameSnapshot.scores.T}`
+                        : ""}{" "}
+                      {bestGameSnapshot.scores.S
+                        ? `S: ${bestGameSnapshot.scores.S}`
+                        : ""}{" "}
+                      | ({bestGameSnapshot.moves} Moves)
                     </div>
 
                     {/* Scaled-down Board Wrapper */}
@@ -4771,7 +4869,7 @@ export default function App() {
     gameMode,
     activePlayers = ["X", "O", "T", "S"],
   ) {
-    const DEBUG_AI = true;
+    const DEBUG_AI = false;
     // --- 1. MEMORY & PERSONALITY INITIALIZATION ---
     globalThis.aiMemories = globalThis.aiMemories || {};
     if (!globalThis.aiMemories[aiPiece]) {
@@ -5666,6 +5764,60 @@ export default function App() {
     }
 
     return selectedMove;
+  }
+
+  function simulateGameTick(
+    game,
+    x,
+    y,
+    player,
+    rows,
+    cols,
+    trainingPlayers,
+    gameMode,
+  ) {
+    // 1. Working copy (In RL we often mutate the ref directly for speed)
+    const b = game.board;
+    let totalLinesToErase = new Set();
+
+    // 2. Queue the move
+    let q = [{ x, y, piece: player, overwrite: false }];
+
+    // Handle Mirror Protocol if active
+    if (gameMode === "mirror_protocol") {
+      let mx = cols - 1 - x;
+      if (mx >= 0 && mx < cols && !b[y][mx].piece && !b[y][mx].mechanicalLock) {
+        q.push({ x: mx, y: y, piece: player, overwrite: false });
+      }
+    }
+
+    // 3. Run the Pipeline (Ensure these are imported/available)
+    // Phase: Placements
+    const pResult = resolvePlacements(q, b, cols, rows, trainingPlayers, false);
+    pResult.linesToErase.forEach((l) => totalLinesToErase.add(l));
+
+    // Phase: Updates (Switches/Gates)
+    if (typeof updateSwitches === "function") updateSwitches(b);
+
+    // Phase: First Gravity
+    if (gameMode === "cascade") runGravity(b, null, false, cols, rows);
+
+    // Phase: Machine Tick (The core logic for machines)
+    tickMachines(
+      b,
+      null,
+      false,
+      cols,
+      rows,
+      trainingPlayers,
+      totalLinesToErase,
+    );
+
+    // Phase: Final Updates
+    if (typeof updateSwitches === "function") updateSwitches(b);
+    if (gameMode === "cascade") runGravity(b, null, false, cols, rows);
+
+    return { board: b, linesRemoved: totalLinesToErase };
   }
 
   // --- MAIN GAME UI ---
