@@ -2638,6 +2638,26 @@ export default function App() {
         seq.forEach((pos) => {
           if (b[pos.y][pos.x].type !== "neutral") b[pos.y][pos.x].dead = true;
         });
+
+        // [ FIX: RESTORED LINE GENERATION FOR THE UI ]
+        // Sort the sequence geometrically so the SVG line draws correctly from start to end
+        seq.sort((a, b) => a.x - b.x || a.y - b.y);
+
+        const colors = {
+          X: "#22d3ee",
+          O: "#fb7185",
+          T: "#34d399",
+          S: "#fbbf24",
+        };
+
+        newLines.push({
+          id: Math.random().toString(36).substring(2, 9), // Safe random key
+          x1: seq[0].x,
+          y1: seq[0].y,
+          x2: seq[seq.length - 1].x,
+          y2: seq[seq.length - 1].y,
+          color: colors[player] || "#ffffff",
+        });
       }
     });
 
@@ -2888,7 +2908,19 @@ export default function App() {
         ["O", "T", "S"].forEach((p) => {
           if (game.scores[p] > aiMax) aiMax = game.scores[p];
         });
-        if (isEndState && game.scores.X <= aiMax) anyFailed = true;
+
+        // DRAW LOGIC:
+        // 1. If we are lower than AI: Fail (Loss)
+        if (isEndState && game.scores.X < aiMax) {
+          anyFailed = true;
+        }
+        // 2. If we are EQUAL to AI: Don't fail, but don't meet goal (Draw)
+        else if (isEndState && game.scores.X === aiMax) {
+          allMet = false;
+          // anyFailed stays false, so we don't return "lost"
+        }
+
+        // If the game is still going, the goal isn't "met" yet
         if (!isEndState) allMet = false;
       } else if (g.type === "exact_score") {
         if (game.scores.X !== target) allMet = false;
@@ -2915,10 +2947,17 @@ export default function App() {
       }
     });
 
+    // 4. Final Determination
     if (anyFailed) return "lost";
 
-    // Early Win Condition: If all goals are met AND we don't need to fill the board
+    // Won: All goals met (requires beating the AI in standard mode)
     if (allMet && (!requiresFullBoard || isEndState)) return "won";
+
+    // Draw: If the board is full, we didn't fail, but we didn't "meet" all goals (Standard mode equality)
+    if (isEndState && !allMet && !anyFailed) {
+      const isPvp = goals.some((g) => g.type === "standard");
+      return isPvp ? "draw" : "lost";
+    }
 
     if (isEndState) return "lost";
 
@@ -4412,7 +4451,7 @@ export default function App() {
               <AnimatePresence mode="popLayout">
                 {bestGameSnapshot && (
                   <div className="justify-center flex  flex-col gap-4 items-center opacity-80 mix-blend-screen pointer-events-none">
-                    <div className="text-[10px] text-cyan-300 font-mono font-bold tracking-widest uppercase flex items-center gap-2">
+                    <div className="text-[10px] text-white-300 font-mono font-bold tracking-widest uppercase flex items-center gap-2">
                       GEN-{bestGameSnapshot.epoch + 1} | Score: X:{" "}
                       {bestGameSnapshot.scores.X} O: {bestGameSnapshot.scores.O}{" "}
                       {bestGameSnapshot.scores.T
