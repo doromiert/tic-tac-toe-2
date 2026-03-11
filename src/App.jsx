@@ -4833,6 +4833,7 @@ export default function App() {
     gameMode,
     activePlayers = ["X", "O", "T", "S"],
   ) {
+    const DEBUG_AI = false;
     // --- 1. MEMORY & PERSONALITY INITIALIZATION ---
     globalThis.aiMemories = globalThis.aiMemories || {};
     if (!globalThis.aiMemories[aiPiece]) {
@@ -5190,7 +5191,7 @@ export default function App() {
       }
     }
 
-    if (oppScoreGained > 0 || aiScoreGained > 0) {
+    if (DEBUG_AI && (oppScoreGained > 0 || aiScoreGained > 0)) {
       console.log(
         `%c[AI REACTION] %cOpponent Scored: ${oppScoreGained} | AI Scored: ${aiScoreGained}`,
         "color: #ff4444; font-weight: bold;",
@@ -5248,11 +5249,12 @@ export default function App() {
     });
 
     if (recentBlocks > memory.blockedCount) {
-      console.log(
-        `%c[AI REACTION] %cBlock Detected! Player intercepted a target.`,
-        "color: #ffa500; font-weight: bold;",
-        "color: #ffffff;",
-      );
+      if (DEBUG_AI)
+        console.log(
+          `%c[AI REACTION] %cBlock Detected! Player intercepted a target.`,
+          "color: #ffa500; font-weight: bold;",
+          "color: #ffffff;",
+        );
       memory.riskiness = Math.max(0.0, memory.riskiness - 0.08 * adaptRate);
       memory.vendettas[opponents[0]] += 1;
       memory.aggressiveness = Math.max(
@@ -5322,11 +5324,12 @@ export default function App() {
 
     // --- [ BERSERKER / DESPERATION MECHANIC ] ---
     if (scoreDeficit >= 4 && memory.riskiness < 0.3) {
-      console.log(
-        `%c[AI ${aiPiece} BERSERK] %cScore deficit critical! Abandoning defense for a Hail Mary!`,
-        "color: #ff0000; font-weight: bold; font-size: 1.1em;",
-        "color: #fff;",
-      );
+      if (DEBUG_AI)
+        console.log(
+          `%c[AI ${aiPiece} BERSERK] %cScore deficit critical! Abandoning defense for a Hail Mary!`,
+          "color: #ff0000; font-weight: bold; font-size: 1.1em;",
+          "color: #fff;",
+        );
       memory.strategy = "berserk";
       memory.aggressiveness = 1.0;
       memory.riskiness = 1.0;
@@ -5341,39 +5344,42 @@ export default function App() {
         : memory.aggressiveness > 0.7
           ? "#ff0000"
           : "#888888";
-    console.groupCollapsed(
-      `%c[AI ${aiPiece} THOUGHT PROCESS] %cStrategy: ${memory.strategy}`,
-      `color: ${moodColor}; font-weight: bold;`,
-      "color: #aaa;",
-    );
-    console.log("Score Deficit:", scoreDeficit);
-    console.log("Learning Rate (Curiosity):", adaptRate.toFixed(2) + "x");
-    console.log(
-      `Highest Threat Encountered: ${Math.floor(lastPlayerThreat)} (${evalMessage})`,
-    );
+    if (DEBUG_AI) {
+      console.groupCollapsed(
+        `%c[AI ${aiPiece} THOUGHT PROCESS] %cStrategy: ${memory.strategy}`,
+        `color: ${moodColor}; font-weight: bold;`,
+        "color: #aaa;",
+      );
+      console.log("Score Deficit:", scoreDeficit);
+      console.log("Learning Rate (Curiosity):", adaptRate.toFixed(2) + "x");
+      console.log(
+        `Highest Threat Encountered: ${Math.floor(lastPlayerThreat)} (${evalMessage})`,
+      );
 
-    console.log("--- INTERNAL STATE ---");
-    console.table({
-      "My Aggro": memory.aggressiveness.toFixed(2),
-      "My Defense": memory.defensiveness.toFixed(2),
-      "My Risk": memory.riskiness.toFixed(2),
-    });
-
-    console.log("--- OPPONENT DOSSIERS ---");
-    let displayProfiles = {};
-    for (const [oppKey, oppData] of Object.entries(memory.opponentProfiles)) {
-      displayProfiles[`Player ${oppKey}`] = {
-        "Assumed Aggro": oppData.aggro.toFixed(2),
-        "Assumed Defense": oppData.def.toFixed(2),
-        "Assumed Skill": (oppData.perceivedSkill || 0).toFixed(2), // Use the gated respect value
-        Confidence: (oppData.confidence * 100).toFixed(0) + "%",
-        "Blunder Streak": Math.floor(oppData.consecutiveBlunders),
-        "Grudge Level": memory.vendettas[oppKey].toFixed(2),
-      };
+      console.log("--- INTERNAL STATE ---");
+      console.table({
+        "My Aggro": memory.aggressiveness.toFixed(2),
+        "My Defense": memory.defensiveness.toFixed(2),
+        "My Risk": memory.riskiness.toFixed(2),
+      });
     }
-    console.table(displayProfiles);
-    console.groupEnd();
 
+    if (DEBUG_AI) {
+      console.log("--- OPPONENT DOSSIERS ---");
+      let displayProfiles = {};
+      for (const [oppKey, oppData] of Object.entries(memory.opponentProfiles)) {
+        displayProfiles[`Player ${oppKey}`] = {
+          "Assumed Aggro": oppData.aggro.toFixed(2),
+          "Assumed Defense": oppData.def.toFixed(2),
+          "Assumed Skill": (oppData.perceivedSkill || 0).toFixed(2), // Use the gated respect value
+          Confidence: (oppData.confidence * 100).toFixed(0) + "%",
+          "Blunder Streak": Math.floor(oppData.consecutiveBlunders),
+          "Grudge Level": memory.vendettas[oppKey].toFixed(2),
+        };
+      }
+      console.table(displayProfiles);
+      console.groupEnd();
+    }
     // --- 5. VALID MOVES & SIMULATION LOOP (SPITE & ET AWARE) ---
     let validMoves = [];
     for (let y = 0; y < rows; y++) {
@@ -5636,11 +5642,12 @@ export default function App() {
         Math.floor(Math.random() * Math.min(4, moveUtilities.length - 1)) + 1;
       selectedMove = moveUtilities[rank].move;
       highestUtility = moveUtilities[rank].utility;
-      console.log(
-        `%c[AI ${aiPiece} ERROR] %cBot made a mechanical mistake and picked a sub-optimal move!`,
-        "color: #ffaa00;",
-        "color: #fff;",
-      );
+      if (DEBUG_AI)
+        console.log(
+          `%c[AI ${aiPiece} ERROR] %cBot made a mechanical mistake and picked a sub-optimal move!`,
+          "color: #ffaa00;",
+          "color: #fff;",
+        );
     }
 
     // Save intended targets (Backup plans)
@@ -5659,33 +5666,36 @@ export default function App() {
     // --- LOG DEEP ANALYSIS SUMMARY ---
     const lastAnalysis = memory.moveHistory[memory.moveHistory.length - 1];
     if (lastAnalysis) {
-      console.groupCollapsed(
-        `%c[AI ${aiPiece} DEEP ANALYSIS] %cPlayer ${lastAnalysis.player} @ {${lastAnalysis.pos.x}, ${lastAnalysis.pos.y}}`,
-        "color: #ff00ff; font-weight: bold;",
-        "color: #fff;",
-      );
-      console.log("Assessed Utility:", lastAnalysis.assessedUtil);
-      console.log("Internal Readjustment:", lastAnalysis.readjustment);
-      console.log(
-        "Future Threats Detected:",
-        lastAnalysis.possibleLines.length,
-      );
-      console.table(
-        lastAnalysis.possibleLines.map((l) => ({
-          dir: l.dir,
-          pathLen: l.coords.length,
-        })),
-      );
-      console.groupEnd();
+      if (DEBUG_AI) {
+        console.groupCollapsed(
+          `%c[AI ${aiPiece} DEEP ANALYSIS] %cPlayer ${lastAnalysis.player} @ {${lastAnalysis.pos.x}, ${lastAnalysis.pos.y}}`,
+          "color: #ff00ff; font-weight: bold;",
+          "color: #fff;",
+        );
+        console.log("Assessed Utility:", lastAnalysis.assessedUtil);
+        console.log("Internal Readjustment:", lastAnalysis.readjustment);
+        console.log(
+          "Future Threats Detected:",
+          lastAnalysis.possibleLines.length,
+        );
+        console.table(
+          lastAnalysis.possibleLines.map((l) => ({
+            dir: l.dir,
+            pathLen: l.coords.length,
+          })),
+        );
+        console.groupEnd();
+      }
     }
 
     if (selectedMove) {
-      console.log(
-        `%c[AI ${aiPiece} MOVES] %c{ x: ${selectedMove.x}, y: ${selectedMove.y} } %c(Utility: ${Math.floor(highestUtility)})`,
-        "color: #00aaff; font-weight: bold;",
-        "color: #ffffff;",
-        "color: #888888;",
-      );
+      if (DEBUG_AI)
+        console.log(
+          `%c[AI ${aiPiece} MOVES] %c{ x: ${selectedMove.x}, y: ${selectedMove.y} } %c(Utility: ${Math.floor(highestUtility)})`,
+          "color: #00aaff; font-weight: bold;",
+          "color: #ffffff;",
+          "color: #888888;",
+        );
     }
 
     return selectedMove;
