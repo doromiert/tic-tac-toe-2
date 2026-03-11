@@ -3103,6 +3103,13 @@ export default function App() {
 
           // IF THE GAME IS OVER: Record stats and reset
           if (game.status !== "active") {
+            if (bcConfigRef.current.iters <= 10000) {
+              if (bcConfigRef.current.iters === 10000) {
+                bcConfigRef.current.enabled = false; // Naturally turn off
+                console.log("[BC] 10k iterations reached. Auto-disabled.");
+              }
+              bcConfigRef.current.iters++;
+            }
             // --- 1. SLIDING WINDOW STATS (Only happens ONCE per game) ---
             if (!statsRef.current.history) statsRef.current.history = [];
             const resultValue = game.status === "won" ? 1 : 0;
@@ -3318,13 +3325,6 @@ export default function App() {
           // ==========================================
           activeNeuralTasks.forEach((task) => {
             // --- BC ITERATION CUTOFF LOGIC ---
-            if (bcConfigRef.current.iters <= 10000) {
-              if (bcConfigRef.current.iters === 10000) {
-                bcConfigRef.current.enabled = false; // Naturally turn off
-                console.log("[BC] 10k iterations reached. Auto-disabled.");
-              }
-              bcConfigRef.current.iters++;
-            }
 
             let best = null;
 
