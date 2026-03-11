@@ -2981,6 +2981,16 @@ export default function App() {
   useEffect(() => {
     currentGoalsRef.current = currentGoals;
   }, [currentGoals]);
+  const MOOD_PALETTES = {
+    // RED/ORANGE: Failing, high exploration (Panic)
+    panic: { p: "rgba(244, 63, 94, 0.4)", s: "rgba(251, 146, 60, 0.3)" },
+    // PURPLE/PINK: Behavioral Cloning / Supervised Learning (Curiosity)
+    learning: { p: "rgba(168, 85, 247, 0.4)", s: "rgba(236, 72, 153, 0.3)" },
+    // CYAN/EMERALD: High win-rate, low epsilon (Mastery)
+    mastery: { p: "rgba(6, 182, 212, 0.4)", s: "rgba(16, 185, 129, 0.3)" },
+    // BLUE/SLATE: Mid-tier performance (Grinding)
+    neutral: { p: "rgba(59, 130, 246, 0.3)", s: "rgba(71, 85, 105, 0.2)" },
+  };
   useEffect(() => {
     const isPvpActive = currentGoalsRef.current.some(
       (g) => g.type === "standard",
@@ -3133,14 +3143,31 @@ export default function App() {
             else statsRef.current.draws++;
 
             // --- 3. EPSILON (Adrenaline) ---
+            // 1. Faster Decay: If we're winning 35% of games, we should be testing the model.
+            const DECAY_MODIFIER =
+              statsRef.current.recentWinRate > 0.3 ? 0.98 : 0.995;
+
             globalEpsilonRef.current = Math.max(
               MIN_EPSILON,
-              globalEpsilonRef.current * DECAY_RATE,
+              globalEpsilonRef.current * DECAY_MODIFIER,
             );
-            const panic = Math.pow(1.0 - statsRef.current.recentWinRate, 2);
+
+            // 2. Smoothed Adrenaline:
+            // Instead of a hard deficit, we use a "Recovery" slope.
+            // If WinRate is 35% (0.35), deficit is 0.
+            const targetFloor = 0.35;
+            const successDeficit = Math.max(
+              0,
+              targetFloor - statsRef.current.recentWinRate,
+            );
+
+            // 3. Final Epsilon
+            // We cap the 'panic' contribution so it can never force Epsilon above 0.8
+            // once the model has seen a few hundred games.
+            const panicLimit = currentEpochRef.current > 500 ? 0.5 : 1.0;
             epsilonRef.current = Math.min(
-              1.0,
-              globalEpsilonRef.current + panic * 0.5,
+              panicLimit,
+              globalEpsilonRef.current + successDeficit * 2.0,
             );
 
             // --- 4. CAMPAIGN LOGIC ---
@@ -3426,9 +3453,9 @@ export default function App() {
 
             reward += pGained * 1.5 - eGained * 2.0;
 
-            if (extraEarned > 0) reward += 0.5;
             if (combo > 0) reward += combo * 0.5;
-            if (targetsGained > 0) reward += targetsGained * 2.0;
+            if (targetsGained > 0) reward += targetsGained * 3.0; // Increased from 2.0
+            if (extraEarned > 0) reward += 1.0; // Increased from 0.5
 
             // ==========================================
             // [ PARITY FIX ]: ASK THE ENGINE FOR THE STATUS
@@ -3442,7 +3469,7 @@ export default function App() {
 
             // Apply end-game rewards based on what the engine decided
             if (newStatus === "won") {
-              reward += 5.0;
+              reward += 5.0 * (1.0 + epsilonRef.current);
               window.triggerFlash();
             } else if (newStatus === "lost") {
               reward -= 5.0;
@@ -3461,7 +3488,7 @@ export default function App() {
                 rows,
                 cols,
               ),
-              reward: Math.max(-1, Math.min(1, reward / 5.0)),
+              reward: Math.max(-1, Math.min(1, reward / 3.0)),
               done: task.game.status !== "active",
             });
 
@@ -3530,22 +3557,32 @@ export default function App() {
         )}, ${Math.round(b1 + (b2 - b1) * factor)}, ${a1 + (a2 - a1) * factor})`;
       };
 
-      // Inside the setInterval block...
-      const currentRecentWR = statsRef.current.recentWinRate || 0;
-      const moodFactor = Math.min(Math.max(currentRecentWR * 2.0, 0), 1);
+      const wr = statsRef.current.recentWinRate || 0;
+      const eps = epsilonRef.current || 0;
+      const isBC = bcConfigRef.current.enabled;
 
-      // Removed the 'if (currentEpochRef.current % 30 === 0)' condition
+      let targetMood;
+
+      // Priority logic for mood selection
+      if (isBC) {
+        targetMood = MOOD_PALETTES.learning;
+      } else if (wr < 0.35 || eps > 0.6) {
+        // Use your existing red/orange logic but intensified
+        targetMood = MOOD_PALETTES.panic;
+      } else if (wr > 0.75) {
+        targetMood = MOOD_PALETTES.mastery;
+      } else {
+        targetMood = MOOD_PALETTES.neutral;
+      }
+
+      // Map the WinRate (0 to 1) as a factor for intensity within that mood
+      // Or just lerp between the "Neutral" state and the "Target" state
+      // for a smoother transition.
+      const intensity = Math.min(Math.max(wr, 0.2), 0.8);
+
       setGlobalMood({
-        primary: lerpColor(
-          "rgba(244, 63, 94, 0.3)",
-          "rgba(6, 182, 212, 0.3)",
-          moodFactor,
-        ),
-        secondary: lerpColor(
-          "rgba(251, 146, 60, 0.2)",
-          "rgba(16, 185, 129, 0.2)",
-          moodFactor,
-        ),
+        primary: lerpColor(MOOD_PALETTES.neutral.p, targetMood.p, intensity),
+        secondary: lerpColor(MOOD_PALETTES.neutral.s, targetMood.s, intensity),
       });
 
       if (isTraining.current) {
