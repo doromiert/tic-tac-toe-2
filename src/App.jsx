@@ -4330,7 +4330,7 @@ export default function App() {
             />
 
             <div
-              class="grid grid-cols-2 h-full w-full items-center z-50"
+              className="grid grid-cols-2 h-full w-full items-center z-50"
               style={{ paddingLeft: "10vw", paddingRight: "10vw" }}
             >
               <div className="z-10 flex w-full flex-col items-center text-center">
