@@ -3530,23 +3530,23 @@ export default function App() {
         )}, ${Math.round(b1 + (b2 - b1) * factor)}, ${a1 + (a2 - a1) * factor})`;
       };
 
+      // Inside the setInterval block...
       const currentRecentWR = statsRef.current.recentWinRate || 0;
       const moodFactor = Math.min(Math.max(currentRecentWR * 2.0, 0), 1);
 
-      if (currentEpochRef.current % 30 === 0) {
-        setGlobalMood({
-          primary: lerpColor(
-            "rgba(244, 63, 94, 0.3)",
-            "rgba(6, 182, 212, 0.3)",
-            moodFactor,
-          ),
-          secondary: lerpColor(
-            "rgba(251, 146, 60, 0.2)",
-            "rgba(16, 185, 129, 0.2)",
-            moodFactor,
-          ),
-        });
-      }
+      // Removed the 'if (currentEpochRef.current % 30 === 0)' condition
+      setGlobalMood({
+        primary: lerpColor(
+          "rgba(244, 63, 94, 0.3)",
+          "rgba(6, 182, 212, 0.3)",
+          moodFactor,
+        ),
+        secondary: lerpColor(
+          "rgba(251, 146, 60, 0.2)",
+          "rgba(16, 185, 129, 0.2)",
+          moodFactor,
+        ),
+      });
 
       if (isTraining.current) {
         const mem = tf.memory();
