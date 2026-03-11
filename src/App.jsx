@@ -3565,7 +3565,7 @@ export default function App() {
 
       if (isBC) {
         targetMood = MOOD_PALETTES.learning;
-      } else if (loss > 0.15) {
+      } else if (latestLoss > 0.15) {
         targetMood = MOOD_PALETTES.confusion;
       } else if (avgQ > 1.0 && wr < 0.45) {
         targetMood = MOOD_PALETTES.delusion;
