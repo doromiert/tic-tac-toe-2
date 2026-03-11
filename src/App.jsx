@@ -2982,14 +2982,17 @@ export default function App() {
     currentGoalsRef.current = currentGoals;
   }, [currentGoals]);
   const MOOD_PALETTES = {
-    // RED/ORANGE: Failing, high exploration (Panic)
+    // Your original working colors
     panic: { p: "rgba(244, 63, 94, 0.4)", s: "rgba(251, 146, 60, 0.3)" },
-    // PURPLE/PINK: Behavioral Cloning / Supervised Learning (Curiosity)
     learning: { p: "rgba(168, 85, 247, 0.4)", s: "rgba(236, 72, 153, 0.3)" },
-    // CYAN/EMERALD: High win-rate, low epsilon (Mastery)
     mastery: { p: "rgba(6, 182, 212, 0.4)", s: "rgba(16, 185, 129, 0.3)" },
-    // BLUE/SLATE: Mid-tier performance (Grinding)
     neutral: { p: "rgba(59, 130, 246, 0.3)", s: "rgba(71, 85, 105, 0.2)" },
+
+    // NEW: "The Arrogant Gambler" (Matches original brightness)
+    delusion: { p: "rgba(245, 158, 11, 0.4)", s: "rgba(251, 191, 36, 0.3)" },
+
+    // NEW: "The Brain-melt" (Deep Violet/Indigo mix)
+    crisis: { p: "rgba(79, 70, 229, 0.4)", s: "rgba(30, 27, 75, 0.3)" },
   };
   useEffect(() => {
     const isPvpActive = currentGoalsRef.current.some(
@@ -3558,26 +3561,31 @@ export default function App() {
       };
 
       const wr = statsRef.current.recentWinRate || 0;
+      const avgQ = qTrackerRef.current.getAverage() || 0;
       const eps = epsilonRef.current || 0;
       const isBC = bcConfigRef.current.enabled;
 
       let targetMood;
 
-      // Priority logic for mood selection
       if (isBC) {
         targetMood = MOOD_PALETTES.learning;
-      } else if (wr < 0.35 || eps > 0.6) {
-        // Use your existing red/orange logic but intensified
+      }
+      // DELUSION: Q-value is "perfect" (> 1.0) but Win Rate is subpar (< 45%)
+      else if (avgQ > 1.0 && wr < 0.45) {
+        targetMood = MOOD_PALETTES.delusion;
+      }
+      // PANIC: Failing or high exploration
+      else if (wr < 0.35 || eps > 0.6) {
         targetMood = MOOD_PALETTES.panic;
-      } else if (wr > 0.75) {
+      }
+      // MASTERY: Succeeding
+      else if (wr > 0.75) {
         targetMood = MOOD_PALETTES.mastery;
       } else {
         targetMood = MOOD_PALETTES.neutral;
       }
 
-      // Map the WinRate (0 to 1) as a factor for intensity within that mood
-      // Or just lerp between the "Neutral" state and the "Target" state
-      // for a smoother transition.
+      // Keep your original intensity logic—it was solid.
       const intensity = Math.min(Math.max(wr, 0.2), 0.8);
 
       setGlobalMood({
