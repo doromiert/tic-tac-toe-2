@@ -3513,6 +3513,7 @@ export default function App() {
               reward -= 5.0;
             } else if (allMet && (!requiresFullBoard || isEndState)) {
               task.game.status = "won";
+              window.triggerFlash();
               reward += 5.0;
             } else if (isEndState) {
               task.game.status = "lost";
