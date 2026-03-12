@@ -3541,7 +3541,11 @@ export default function App() {
         ),
       });
       const lerpColor = (rgba1, rgba2, factor) => {
-        const parse = (s) => s.match(/\d+(\.\d+)?/g).map(Number);
+        const parse = (s) => {
+          const match = s.match(/\d+(\.\d+)?/g);
+          if (!match) return [0, 0, 0, 1]; // Fallback to black/opaque if parsing fails
+          return match.map(Number);
+        };
         const [r1, g1, b1, a1] = parse(rgba1);
         const [r2, g2, b2, a2] = parse(rgba2);
         return `rgba(${Math.round(r1 + (r2 - r1) * factor)}, ${Math.round(
@@ -3554,23 +3558,35 @@ export default function App() {
       const eps = epsilonRef.current || 0;
 
       let targetMood;
+      let intensity = 0.5; // Default
 
       if (bcConfigRef.current.enabled) {
         targetMood = MOOD_PALETTES.learning;
+        // Intensity based on how much of the buffer is "expert" data
+        intensity = globalReplayBuffer.current.length / maxMemoryEntries;
       } else if (latestLoss > 0.15) {
         targetMood = MOOD_PALETTES.confusion;
+        // Higher loss = more "confused" (brighter/more saturated)
+        intensity = Math.min(latestLoss * 2, 1.0);
       } else if (avgQ > 1.0 && wr < 0.45) {
         targetMood = MOOD_PALETTES.delusion;
+        // How "overconfident" is it? (Q-value vs low WinRate)
+        intensity = Math.min(avgQ / 5, 1.0);
       } else if (wr < 0.35 || eps > 0.6) {
         targetMood = MOOD_PALETTES.panic;
+        // More panic as winrate drops further below the threshold
+        intensity = 1.0 - wr / 0.35;
       } else if (wr > 0.75) {
         targetMood = MOOD_PALETTES.mastery;
+        // Scale intensity from 0.75 to 1.0 winrate
+        intensity = (wr - 0.75) / 0.25;
       } else {
         targetMood = MOOD_PALETTES.neutral;
+        intensity = 0.5;
       }
 
-      // Keep your original intensity logic—it was solid.
-      const intensity = Math.min(Math.max(wr, 0.2), 0.8);
+      // Clamp for safety
+      intensity = Math.min(Math.max(intensity, 0.1), 0.9);
 
       if (lastMood != targetMood)
         setLastMood({
