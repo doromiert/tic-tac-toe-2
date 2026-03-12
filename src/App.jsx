@@ -3557,45 +3557,58 @@ export default function App() {
       const avgQ = qTrackerRef.current.getAverage() || 0;
       const eps = epsilonRef.current || 0;
 
-      let targetMood;
-      let intensity = 0.5; // Default
+      // 1. Determine what the mood WOULD be if BC was disabled
+      let naturalMood;
+      let naturalIntensity;
 
-      if (bcConfigRef.current.enabled) {
-        targetMood = MOOD_PALETTES.learning;
-        // Intensity based on how much of the buffer is "expert" data
-        intensity = globalReplayBuffer.current.length / maxMemoryEntries;
-      } else if (latestLoss > 0.15) {
-        targetMood = MOOD_PALETTES.confusion;
-        // Higher loss = more "confused" (brighter/more saturated)
-        intensity = Math.min(latestLoss * 2, 1.0);
+      if (latestLoss > 0.15) {
+        naturalMood = MOOD_PALETTES.confusion;
+        naturalIntensity = Math.min(latestLoss * 2, 1.0);
       } else if (avgQ > 1.0 && wr < 0.45) {
-        targetMood = MOOD_PALETTES.delusion;
-        // How "overconfident" is it? (Q-value vs low WinRate)
-        intensity = Math.min(avgQ / 5, 1.0);
+        naturalMood = MOOD_PALETTES.delusion;
+        naturalIntensity = Math.min(avgQ / 5, 1.0);
       } else if (wr < 0.35 || eps > 0.6) {
-        targetMood = MOOD_PALETTES.panic;
-        // More panic as winrate drops further below the threshold
-        intensity = 1.0 - wr / 0.35;
+        naturalMood = MOOD_PALETTES.panic;
+        naturalIntensity = 1.0 - wr / 0.35;
       } else if (wr > 0.75) {
-        targetMood = MOOD_PALETTES.mastery;
-        // Scale intensity from 0.75 to 1.0 winrate
-        intensity = (wr - 0.75) / 0.25;
+        naturalMood = MOOD_PALETTES.mastery;
+        naturalIntensity = (wr - 0.75) / 0.25;
       } else {
-        targetMood = MOOD_PALETTES.neutral;
-        intensity = 0.5;
+        naturalMood = MOOD_PALETTES.neutral;
+        naturalIntensity = 0.5;
       }
 
-      // Clamp for safety
-      intensity = Math.min(Math.max(intensity, 0.1), 0.9);
+      // 2. Determine the active target and intensity based on BC state
+      let targetMood;
+      let finalIntensity;
 
-      if (lastMood != targetMood)
-        setLastMood({
-          p: targetMood.p,
-          s: targetMood.s,
-        });
+      if (bcConfigRef.current.enabled) {
+        const progress = Math.min(bcConfigRef.current.iters / 10000, 1.0);
+
+        // We create a "blended" mood target
+        // As progress -> 1.0, the natural mood "shines through"
+        targetMood = {
+          p: lerpColor(MOOD_PALETTES.learning.p, naturalMood.p, progress),
+          s: lerpColor(MOOD_PALETTES.learning.s, naturalMood.s, progress),
+        };
+
+        // Smoothly transition the intensity from BC-style to Natural-style
+        finalIntensity = 0.5 + (naturalIntensity - 0.5) * progress;
+      } else {
+        targetMood = naturalMood;
+        finalIntensity = naturalIntensity;
+      }
+
+      // 3. Apply Clamping & State Updates
+      const clampedIntensity = Math.min(Math.max(finalIntensity, 0.1), 0.9);
+
+      if (lastMood.p !== targetMood.p) {
+        setLastMood(targetMood);
+      }
+
       setGlobalMood({
-        primary: lerpColor(lastMood.p, targetMood.p, intensity),
-        secondary: lerpColor(lastMood.s, targetMood.s, intensity),
+        primary: lerpColor(lastMood.p, targetMood.p, clampedIntensity),
+        secondary: lerpColor(lastMood.s, targetMood.s, clampedIntensity),
       });
 
       if (isTraining.current) {
