@@ -158,28 +158,23 @@ export default function App() {
   const [isCampaignMode, setIsCampaignMode] = useState(false);
   const [campaignWins, setCampaignWins] = useState(0); // Tracks wins for the 10-win gate
   const flashId = useRef(0);
+  const MOOD_PALETTES = {
+    panic: { p: "rgba(244, 63, 94, 0.4)", s: "rgba(251, 146, 60, 0.3)" },
+    learning: { p: "rgba(168, 85, 247, 0.4)", s: "rgba(236, 72, 153, 0.3)" },
+    mastery: { p: "rgba(6, 182, 212, 0.4)", s: "rgba(16, 185, 129, 0.3)" },
+    neutral: { p: "rgba(59, 130, 246, 0.3)", s: "rgba(71, 85, 105, 0.2)" },
+    delusion: { p: "rgba(245, 158, 11, 0.4)", s: "rgba(251, 191, 36, 0.3)" },
+    crisis: { p: "rgba(79, 70, 229, 0.4)", s: "rgba(30, 27, 75, 0.3)" },
+    confusion: { p: "rgba(139, 92, 246, 0.4)", s: "rgba(79, 70, 229, 0.3)" },
+  };
   useEffect(() => {
-    window.testMood = (positive) => {
-      const lerpColor = (rgba1, rgba2, factor) => {
-        const parse = (s) => s.match(/\d+(\.\d+)?/g).map(Number);
-        const [r1, g1, b1, a1] = parse(rgba1);
-        const [r2, g2, b2, a2] = parse(rgba2);
-        return `rgba(${Math.round(r1 + (r2 - r1) * factor)}, ${Math.round(
-          g1 + (g2 - g1) * factor,
-        )}, ${Math.round(b1 + (b2 - b1) * factor)}, ${a1 + (a2 - a1) * factor})`;
-      };
+    window.testMood = (mood) => {
+      let prim = MOOD_PALETTES[mood]?.p || "rgba(244, 63, 94, 0.4)";
+      let sec = MOOD_PALETTES[mood]?.s || "rgba(251, 146, 60, 0.3)";
 
       setGlobalMood({
-        primary: lerpColor(
-          "rgba(244, 63, 94, 0.3)", // Panicked Red
-          "rgba(6, 182, 212, 0.3)", // Confident Cyan
-          Number(positive),
-        ),
-        secondary: lerpColor(
-          "rgba(251, 146, 60, 0.2)", // Stressed Orange
-          "rgba(16, 185, 129, 0.2)", // Relaxed Emerald
-          Number(positive),
-        ),
+        primary: prim,
+        secondary: sec,
       });
     };
     window.triggerFlash = () => {
@@ -2981,15 +2976,7 @@ export default function App() {
   useEffect(() => {
     currentGoalsRef.current = currentGoals;
   }, [currentGoals]);
-  const MOOD_PALETTES = {
-    panic: { p: "rgba(244, 63, 94, 0.4)", s: "rgba(251, 146, 60, 0.3)" },
-    learning: { p: "rgba(168, 85, 247, 0.4)", s: "rgba(236, 72, 153, 0.3)" },
-    mastery: { p: "rgba(6, 182, 212, 0.4)", s: "rgba(16, 185, 129, 0.3)" },
-    neutral: { p: "rgba(59, 130, 246, 0.3)", s: "rgba(71, 85, 105, 0.2)" },
-    delusion: { p: "rgba(245, 158, 11, 0.4)", s: "rgba(251, 191, 36, 0.3)" },
-    crisis: { p: "rgba(79, 70, 229, 0.4)", s: "rgba(30, 27, 75, 0.3)" },
-    confusion: { p: "rgba(139, 92, 246, 0.4)", s: "rgba(79, 70, 229, 0.3)" },
-  };
+
   useEffect(() => {
     const isPvpActive = currentGoalsRef.current.some(
       (g) => g.type === "standard",
