@@ -3343,7 +3343,7 @@ export default function App() {
             let best = null;
 
             // --- BEHAVIORAL CLONING INJECTION ---
-            if (bcConfigRef.current.enabled) {
+            if (bcConfigRef.current.enabled && task.game.moves !== 0) {
               // Query the expert engine instead of the neural net
               best = getProceduralMove(
                 task.game.board,
