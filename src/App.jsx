@@ -3998,30 +3998,13 @@ export default function App() {
           <div className="flex gap-4 h-full">
             <div className="flex flex-col items-center w-64">
               <div className="flex justify-between w-full text-[8px] text-slate-500 uppercase tracking-tighter mb-1">
-                <span>Replay Buffer Saturation</span>
-                <span>{telemetry.bufferFillPct.toFixed(1)}%</span>
+                <span>Games until BC is off</span>
+                <span>{bcConfigRef.current.iters} out of 10000</span>
               </div>
               <div className="w-full h-1 bg-slate-800 rounded-full overflow-hidden">
                 <div
                   className="h-full bg-cyan-500 transition-all duration-300 ease-out"
-                  style={{ width: `${telemetry.bufferFillPct}%` }}
-                />
-              </div>
-            </div>
-            {/* VRAM USAGE */}
-            <div className="flex flex-col gap-1 w-32">
-              <div className="flex justify-between text-[8px] font-bold text-slate-500 uppercase">
-                <span>VRAM</span>
-                <span className="text-cyan-400 min-w-[65px] text-right">
-                  {(vramUsage.bytes / 1024 / 1024).toFixed(1)}MB
-                </span>
-              </div>
-              <div className="h-1 w-full bg-white/5 rounded-full overflow-hidden">
-                <motion.div
-                  className="h-full bg-cyan-500 shadow-[0_0_8px_rgba(6,182,212,0.5)]"
-                  animate={{
-                    width: `${Math.min((vramUsage.bytes / 100000000) * 100, 100)}%`,
-                  }}
+                  style={{ width: `${bcConfigRef.current.iters / 100}%` }}
                 />
               </div>
             </div>
@@ -4044,19 +4027,16 @@ export default function App() {
                 className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-fuchsia-500 hover:accent-fuchsia-400 transition-all"
               />
             </div>
-            <div className="flex flex-col gap-1 w-48">
-              <div className="flex justify-between text-[8px] font-bold text-slate-500 uppercase">
-                <span>Simulation amount</span>
-                <span className="text-fuchsia-400">{parallelCount}</span>
-              </div>
+            <div className="flex justify-between text-[12px] font-bold  gap-2 text-slate-500 items-center uppercase">
+              Parallel simulations
               <input
-                type="range"
+                type="number"
                 min="1"
-                max="200"
-                step="1"
                 value={parallelCount}
                 onChange={(e) => setParallelCount(parseInt(e.target.value))}
-                className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-fuchsia-500 hover:accent-fuchsia-400 transition-all"
+                className="w-12 bg-slate-800 text-white p-1 rounded border border-slate-700 text-center text-xs outline-none focus:border-fuchsia-500 
+             [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                title="Parallel count"
               />
             </div>
 
@@ -4090,7 +4070,7 @@ export default function App() {
                     onChange={(e) =>
                       setMiniMapGridSize(parseInt(e.target.value) || 2)
                     }
-                    className="w-12 bg-slate-800 text-white p-1 rounded border border-slate-700 text-center text-xs outline-none focus:border-fuchsia-500"
+                    className="w-12 bg-slate-800 text-white p-1 rounded border border-slate-700 text-center text-xs outline-none focus:border-fuchsia-500 [appearance:textfield] [&::-webkit-outer-spin-button]:bg-none [&::-webkit-inner-spin-button]:bg-none"
                     title="Grid Size (e.g., 2 = 4 boards, 3 = 9 boards)"
                   />
                 )}
