@@ -3582,8 +3582,6 @@ export default function App() {
         secondary: lerpColor(lastMood.s, targetMood.s, intensity),
       });
 
-      console.log(globalMood);
-
       if (isTraining.current) {
         const mem = tf.memory();
         setVramUsage({ bytes: mem.numBytes, tensors: mem.numTensors });
