@@ -2977,6 +2977,7 @@ export default function App() {
     currentGoalsRef.current = currentGoals;
   }, [currentGoals]);
 
+  const [lastMood, setLastMood] = useState(MOOD_PALETTES.neutral);
   useEffect(() => {
     const isPvpActive = currentGoalsRef.current.some(
       (g) => g.type === "standard",
@@ -3551,11 +3552,10 @@ export default function App() {
       const wr = statsRef.current.recentWinRate || 0;
       const avgQ = qTrackerRef.current.getAverage() || 0;
       const eps = epsilonRef.current || 0;
-      const isBC = bcConfigRef.current.enabled;
 
       let targetMood;
 
-      if (isBC) {
+      if (bcConfigRef.current.enabled) {
         targetMood = MOOD_PALETTES.learning;
       } else if (latestLoss > 0.15) {
         targetMood = MOOD_PALETTES.confusion;
@@ -3572,10 +3572,17 @@ export default function App() {
       // Keep your original intensity logic—it was solid.
       const intensity = Math.min(Math.max(wr, 0.2), 0.8);
 
+      if (lastMood != targetMood)
+        setLastMood({
+          p: targetMood.p,
+          s: targetMood.s,
+        });
       setGlobalMood({
-        primary: lerpColor(MOOD_PALETTES.neutral.p, targetMood.p, intensity),
-        secondary: lerpColor(MOOD_PALETTES.neutral.s, targetMood.s, intensity),
+        primary: lerpColor(lastMood.p, targetMood.p, intensity),
+        secondary: lerpColor(lastMood.s, targetMood.s, intensity),
       });
+
+      console.log(globalMood);
 
       if (isTraining.current) {
         const mem = tf.memory();
